@@ -12,14 +12,17 @@ Hedera Agent Kit 後端服務，整合 ERC-8004 agent registry 標準。
 
 ## 架構
 
-```
+```text
 agent-backend/
 ├── src/
 │   ├── index.ts              # Express API server
 │   ├── plugins/
-│   │   └── zkreditPlugin.ts  # Hedera Agent Kit 自定義插件
+│   │   ├── zkreditPlugin.ts            # ERC-8004 registry tools
+│   │   └── creditAssessmentPlugin.ts   # 信用評估 Hedera Agent Kit 工具
 │   └── services/
-│       └── feedbackAuthService.ts  # FeedbackAuth 簽名服務
+│       ├── agentToolkit.ts         # HederaLangchainToolkit 封裝
+│       ├── feedbackAuthService.ts  # FeedbackAuth 簽名服務
+│       └── hederaClient.ts         # Hedera SDK client 共享實例
 ├── .env                       # 環境變數配置
 └── package.json
 ```
@@ -39,6 +42,7 @@ npm install
 ## 啟動
 
 ### 開發模式
+
 ```bash
 npm run dev
 # 或
@@ -46,6 +50,7 @@ npx tsx watch src/index.ts
 ```
 
 ### 生產模式
+
 ```bash
 npm run build
 npm start
@@ -54,11 +59,13 @@ npm start
 ## API Endpoints
 
 ### 1. Health Check
+
 ```bash
 GET /health
 ```
 
 回應：
+
 ```json
 {
   "status": "ok",
@@ -72,11 +79,13 @@ GET /health
 ```
 
 ### 2. 取得可用工具
+
 ```bash
 GET /tools
 ```
 
 回應：
+
 ```json
 {
   "plugin": {
@@ -96,7 +105,53 @@ GET /tools
 }
 ```
 
-### 3. 註冊 Agent
+### 3. Hedera Agent Kit 工具
+
+```bash
+GET /agent-kit/tools
+```
+
+回應：
+
+```json
+{
+  "count": 5,
+  "tools": [
+    { "name": "transferHbar", "description": "Transfer HBAR between accounts" },
+    { "name": "createTopic", "description": "Create a new HCS topic" }
+  ]
+}
+```
+
+執行任一 Hedera Agent Kit 工具：
+
+```bash
+POST /agent-kit/tools/transferHbar
+Content-Type: application/json
+
+{
+  "transfers": [
+    { "accountId": "0.0.1234", "amount": 5 }
+  ],
+  "transactionMemo": "demo payment"
+}
+```
+
+成功回應：
+
+```json
+{
+  "success": true,
+  "tool": "transferHbar",
+  "result": {
+    "status": 22,
+    "transactionId": "0.0.7178277@1731809306.147673000"
+  }
+}
+```
+
+### 4. 註冊 Agent
+
 ```bash
 POST /tools/registerAgent
 Content-Type: application/json
@@ -107,7 +162,8 @@ Content-Type: application/json
 }
 ```
 
-### 4. 提交回饋
+### 5. 提交回饋
+
 ```bash
 POST /tools/submitFeedback
 Content-Type: application/json
@@ -122,7 +178,8 @@ Content-Type: application/json
 }
 ```
 
-### 5. 生成 FeedbackAuth
+### 6. 生成 FeedbackAuth
+
 ```bash
 POST /feedbackauth/generate
 Content-Type: application/json
@@ -136,6 +193,7 @@ Content-Type: application/json
 ```
 
 回應：
+
 ```json
 {
   "success": true,
@@ -149,7 +207,8 @@ Content-Type: application/json
 }
 ```
 
-### 6. 取得合約地址
+### 7. 取得合約地址
+
 ```bash
 GET /contracts
 ```

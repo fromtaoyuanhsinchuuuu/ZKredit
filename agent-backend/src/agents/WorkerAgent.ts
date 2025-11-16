@@ -1,5 +1,6 @@
 import { Client, PrivateKey } from '@hashgraph/sdk';
 import * as crypto from 'crypto';
+import { generateCreditHistoryNoirProof } from '../services/noirCreditHistory';
 
 export class WorkerAgent {
   private agentId: bigint;
@@ -40,14 +41,31 @@ export class WorkerAgent {
   }
 
   async generateCreditHistoryProof(minimumTransactions: number = 1) {
-    const count = this.privateData.transactionHistory.length;
-    console.log('\nCredit History ZK Proof: actual=' + count + ', proving >=' + minimumTransactions);
-    if (count < minimumTransactions) {
+    const actualTransactionCount = this.privateData.transactionHistory.length;
+    console.log('\nCredit History ZK Proof: actual=' + actualTransactionCount + ', proving >=' + minimumTransactions);
+    if (actualTransactionCount < minimumTransactions) {
       throw new Error('Not enough transactions');
     }
+
     const merkleRoot = this.buildMerkleRoot(this.privateData.transactionHistory);
-    const proof = this.mockProof({ count, minimumTransactions, merkleRoot });
-    return { proof, publicInputs: { minimumTransactions, timeRangeMonths: 6, workerAgentId: this.agentId.toString(), merkleRoot }, proofType: 'credit_history' };
+    const noirArtifacts = await generateCreditHistoryNoirProof({
+      actualTransactionCount,
+      minimumTransactions,
+      timeRangeMonths: 6,
+      workerAgentId: this.agentId,
+      transactionMerkleRoot: merkleRoot,
+    });
+
+    return {
+      proofType: 'credit_history',
+      noirArtifacts,
+      publicInputs: {
+        minimumTransactions,
+        timeRangeMonths: 6,
+        workerAgentId: this.agentId.toString(),
+        merkleRoot,
+      },
+    };
   }
 
   async generateCollateralProof(minimumValue: number = 10000) {

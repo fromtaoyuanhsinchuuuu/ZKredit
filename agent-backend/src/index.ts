@@ -1,13 +1,16 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
-import { Client, PrivateKey, AccountId } from '@hashgraph/sdk';
+import { AccountId } from '@hashgraph/sdk';
 import zkreditPlugin from './plugins/zkreditPlugin';
+import { createCreditAssessmentPluginTools } from './plugins/creditAssessmentPlugin';
 import { generateFeedbackAuthForClient } from './services/feedbackAuthService';
 import { WorkerAgent } from './agents/WorkerAgent';
 import { CreditAssessmentAgent } from './agents/CreditAssessmentAgent';
 import { RemittanceAgent } from './agents/RemittanceAgent';
 import { ReceiverAgent } from './agents/ReceiverAgent';
+import { getHederaAgentTools } from './services/agentToolkit';
+import { getHederaClient, getOperatorAccountId, getOperatorPrivateKey } from './services/hederaClient';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -16,18 +19,9 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
-// Initialize Hedera client
-const initializeHederaClient = () => {
-  const operatorId = AccountId.fromString(process.env.HEDERA_ACCOUNT_ID || '0.0.7178277');
-  const operatorKey = PrivateKey.fromStringECDSA(process.env.HEDERA_PRIVATE_KEY!);
-
-  const client = Client.forTestnet();
-  client.setOperator(operatorId, operatorKey);
-
-  return { client, operatorId, operatorKey };
-};
-
-const { client, operatorId, operatorKey } = initializeHederaClient();
+const client = getHederaClient();
+const operatorId = getOperatorAccountId();
+const operatorKey = getOperatorPrivateKey();
 
 // Plugin context
 const context = {
@@ -36,8 +30,9 @@ const context = {
   privateKey: operatorKey,
 };
 
-// Load tools from plugin
-const tools = zkreditPlugin.tools(context);
+const registryTools = zkreditPlugin.tools(context);
+const creditAssessmentTools = createCreditAssessmentPluginTools({ client, operatorKey });
+const tools: any[] = [...registryTools, ...creditAssessmentTools];
 
 // Initialize agents for demo
 let demoWorkerAgent: WorkerAgent | null = null;
@@ -137,6 +132,44 @@ app.get('/tools', (req, res) => {
 });
 
 /**
+ * Hedera Agent Kit Tools
+ */
+app.get('/agent-kit/tools', (req, res) => {
+  const hederaTools = getHederaAgentTools();
+  res.json({
+    count: hederaTools.length,
+    tools: hederaTools.map((tool: any) => ({
+      name: tool.name,
+      description: tool.description,
+    })),
+  });
+});
+
+app.post('/agent-kit/tools/:name', async (req, res) => {
+  const { name } = req.params;
+  const hederaTools = getHederaAgentTools();
+  const tool = hederaTools.find((t: any) => t.name === name);
+
+  if (!tool) {
+    return res.status(404).json({
+      error: 'Hedera Agent Kit tool not found',
+      availableTools: hederaTools.map((t: any) => t.name),
+    });
+  }
+
+  try {
+    const result = await tool.invoke(req.body);
+    res.json({ success: true, tool: tool.name, result });
+  } catch (error: any) {
+    console.error(`Hedera Agent Kit tool error (${name}):`, error);
+    res.status(500).json({
+      error: 'Hedera Agent Kit tool execution failed',
+      message: error.message,
+    });
+  }
+});
+
+/**
  * Execute tool
  * POST /tools/:method
  */
@@ -163,8 +196,11 @@ app.post('/tools/:method', async (req, res) => {
       });
     }
 
-    // Execute tool
-    const result = await tool.execute(client, context, validationResult.data);
+  const executionContext = (creditAssessmentTools as any[]).includes(tool)
+      ? { accountId: operatorId.toString() }
+      : context;
+
+    const result = await tool.execute(client, executionContext as any, validationResult.data);
 
     res.json({
       success: true,

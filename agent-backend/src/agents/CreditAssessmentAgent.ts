@@ -1,6 +1,6 @@
 import { Client, PrivateKey, ContractExecuteTransaction, ContractFunctionParameters } from '@hashgraph/sdk';
 import Groq from 'groq-sdk';
-import * as crypto from 'crypto';
+import { verifyCreditHistoryNoirProof } from '../services/noirCreditHistory';
 
 /**
  * Credit Assessment Agent - ZK Verifier
@@ -120,10 +120,16 @@ export class CreditAssessmentAgent {
     console.log('   ❌ Private: Actual amount HIDDEN\n');
 
     // Verify Credit History Proof
-    const creditValid = this.verifyProof(zkProofs.creditHistory, 'credit_history');
-    console.log('✅ Credit History Proof Verified:', creditValid);
+    let creditValid = false;
+    if (zkProofs.creditHistory?.noirArtifacts) {
+      creditValid = await verifyCreditHistoryNoirProof(zkProofs.creditHistory.noirArtifacts);
+    } else {
+      console.warn('⚠️  Credit history proof missing Noir artifacts');
+    }
+    console.log('✅ Credit History Proof Verified (Noir):', creditValid);
     console.log(`   Public: transactions >= ${zkProofs.creditHistory.publicInputs.minimumTransactions}`);
     console.log(`   Public: Merkle Root = ${zkProofs.creditHistory.publicInputs.merkleRoot.slice(0, 10)}...`);
+    console.log(`   Public Noir Inputs: ${zkProofs.creditHistory.noirArtifacts?.noirPublicInputs.join(', ') || 'n/a'}`);
     console.log('   ❌ Private: Exact count and amounts HIDDEN\n');
 
     // Verify Collateral Proof
