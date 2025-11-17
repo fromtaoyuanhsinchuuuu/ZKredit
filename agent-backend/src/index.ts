@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import * as crypto from 'crypto';
 import { AccountId } from '@hashgraph/sdk';
 import zkreditPlugin from './plugins/zkreditPlugin';
 import { createCreditAssessmentPluginTools } from './plugins/creditAssessmentPlugin';
@@ -8,10 +9,14 @@ import { generateFeedbackAuthForClient } from './services/feedbackAuthService';
 import { WorkerAgent } from './agents/WorkerAgent';
 import { CreditAssessmentAgent } from './agents/CreditAssessmentAgent';
 import { CreditAssessmentAgent2 } from './agents/CreditAssessmentAgent2';
-import { RemittanceAgent } from './agents/RemittanceAgent';
-import { ReceiverAgent } from './agents/ReceiverAgent';
 import { getHederaAgentTools } from './services/agentToolkit';
 import { getHederaClient, getOperatorAccountId, getOperatorPrivateKey } from './services/hederaClient';
+import {
+  getRemittanceEventsForWorker,
+  summarizeRemittanceHistory,
+  deriveZkAttributesFromRemittances,
+  recordLoanDisbursementEvent,
+} from './services/eventLedger';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -164,6 +169,7 @@ type EvaluateCorridorCreditOffersInput = {
   workerAgentId: string;
   requestedAmount: number;
   zkProofs: WorkerZkProofs;
+  zkAttributes?: Record<string, any>;
   agentOverrides?: Partial<Record<string, CreditAssessmentAgent>>;
 };
 
@@ -171,6 +177,7 @@ const evaluateCorridorCreditOffers = async ({
   workerAgentId,
   requestedAmount,
   zkProofs,
+  zkAttributes,
   agentOverrides = {},
 }: EvaluateCorridorCreditOffersInput) => {
   const activeProfiles = creditAgentDirectory.filter(
@@ -216,6 +223,7 @@ const evaluateCorridorCreditOffers = async ({
       applicantAgentId: workerAgentId,
       requestedAmount,
       zkProofs,
+      zkAttributes,
     });
 
     const template = getLoanTemplateForProfile(profile.id);
@@ -274,8 +282,6 @@ const evaluateCorridorCreditOffers = async ({
 let demoWorkerAgent: WorkerAgent | null = null;
 let demoCreditAgent: CreditAssessmentAgent | null = null;
 let demoCreditAgentB: CreditAssessmentAgent | null = null;
-let demoRemittanceAgent: RemittanceAgent | null = null;
-let demoReceiverAgent: ReceiverAgent | null = null;
 
 /**
  * Auto-initialize all demo agents on startup
@@ -313,23 +319,6 @@ const initializeDemoAgents = () => {
     );
     console.log('   ✅ Credit Assessment Agent #2B initialized (alternative offer)');
 
-    // Remittance Agent (Agent #3)
-    demoRemittanceAgent = new RemittanceAgent(
-      BigInt(3),
-      client,
-      operatorKey
-    );
-    console.log('   ✅ Remittance Agent #3 initialized');
-
-    // Receiver Agent (Agent #4)
-    demoReceiverAgent = new ReceiverAgent(
-      BigInt(4),
-      client,
-      operatorKey,
-      operatorId
-    );
-    console.log('   ✅ Receiver Agent #4 initialized');
-    
   syncCreditAgentDirectoryInstances();
     console.log('🎉 All demo agents ready!\n');
   } catch (error: any) {
@@ -648,6 +637,59 @@ app.post('/agents/worker/apply-loan', async (req, res) => {
 });
 
 /**
+ * Worker sends remittance (no dedicated remittance agent needed)
+ */
+app.post('/agents/worker/send-remittance', async (req, res) => {
+  try {
+    if (!demoWorkerAgent) {
+      return res.status(400).json({ error: 'Worker agent not initialized' });
+    }
+
+    const { amount, receiverAccountId, currency = 'USD', corridor } = req.body;
+    if (!amount || !receiverAccountId) {
+      return res.status(400).json({ error: 'amount and receiverAccountId required' });
+    }
+
+    const result = await demoWorkerAgent.sendRemittance({
+      amount,
+      receiverAccountId,
+      currency,
+      corridor,
+    });
+
+    res.json({ success: true, result });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Fetch Worker remittance history + ZK summary
+ */
+app.get('/agents/worker/remittances/:agentId', (req, res) => {
+  try {
+    const { agentId } = req.params;
+    if (!agentId) {
+      return res.status(400).json({ error: 'agentId required' });
+    }
+
+    const history = getRemittanceEventsForWorker(agentId);
+    const summary = summarizeRemittanceHistory(agentId);
+    const zkAttributes = deriveZkAttributesFromRemittances(agentId);
+
+    res.json({
+      success: true,
+      agentId,
+      history,
+      summary,
+      zkAttributes,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * Create Credit Assessment Agent
  * POST /agents/credit/create
  */
@@ -770,220 +812,6 @@ app.post('/agents/credit/offers', async (req, res) => {
   }
 });
 
-/**
- * Create Remittance Agent
- * POST /agents/remittance/create
- */
-app.post('/agents/remittance/create', async (req, res) => {
-  try {
-    const { agentId } = req.body;
-    
-    if (!agentId) {
-      return res.status(400).json({ error: 'agentId required' });
-    }
-
-    demoRemittanceAgent = new RemittanceAgent(
-      BigInt(agentId),
-      client,
-      operatorKey
-    );
-
-    res.json({
-      success: true,
-      message: 'Remittance Agent created',
-      agentId: agentId,
-      fees: demoRemittanceAgent.getFees()
-    });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-/**
- * Process Remittance
- * POST /agents/remittance/send
- */
-app.post('/agents/remittance/send', async (req, res) => {
-  try {
-    if (!demoRemittanceAgent) {
-      return res.status(400).json({ error: 'Remittance agent not initialized. Call /agents/remittance/create first' });
-    }
-
-    const { senderAgentId, receiverAgentId, amount, currency, paymentProof } = req.body;
-
-    if (!senderAgentId || !receiverAgentId || !amount) {
-      return res.status(400).json({ 
-        error: 'senderAgentId, receiverAgentId, and amount required' 
-      });
-    }
-
-    const result = await demoRemittanceAgent.processRemittance({
-      senderAgentId,
-      receiverAgentId,
-      amount,
-      currency: currency || 'USD',
-      paymentProof
-    });
-
-    // If worker agent exists, add transaction to history
-    if (demoWorkerAgent && result.success) {
-      demoWorkerAgent.addTransaction({
-        hash: result.transactionHash,
-        amount: result.netAmount,
-        timestamp: Date.now(),
-        recipient: receiverAgentId
-      });
-    }
-
-    res.json({
-      success: true,
-      result
-    });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-/**
- * Get Remittance History
- * GET /agents/remittance/history/:agentId
- */
-app.get('/agents/remittance/history/:agentId', async (req, res) => {
-  try {
-    if (!demoRemittanceAgent) {
-      return res.status(400).json({ error: 'Remittance agent not initialized' });
-    }
-
-    const { agentId } = req.params;
-    const limit = parseInt(req.query.limit as string) || 10;
-
-    const history = await demoRemittanceAgent.getRemittanceHistory(agentId, limit);
-    const stats = await demoRemittanceAgent.getStatistics(agentId);
-
-    res.json({
-      success: true,
-      agentId,
-      history,
-      statistics: stats
-    });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-/**
- * Create Receiver Agent
- * POST /agents/receiver/create
- */
-app.post('/agents/receiver/create', async (req, res) => {
-  try {
-    const { agentId, accountId } = req.body;
-    
-    if (!agentId || !accountId) {
-      return res.status(400).json({ error: 'agentId and accountId required' });
-    }
-
-    demoReceiverAgent = new ReceiverAgent(
-      BigInt(agentId),
-      client,
-      operatorKey,
-      AccountId.fromString(accountId)
-    );
-
-    res.json({
-      success: true,
-      message: 'Receiver Agent created',
-      agentId: agentId,
-      accountId: accountId
-    });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-/**
- * Receive Remittance Notification
- * POST /agents/receiver/notify
- */
-app.post('/agents/receiver/notify', async (req, res) => {
-  try {
-    if (!demoReceiverAgent) {
-      return res.status(400).json({ error: 'Receiver agent not initialized. Call /agents/receiver/create first' });
-    }
-
-    const { senderAgentId, amount, transactionHash, timestamp } = req.body;
-
-    if (!senderAgentId || !amount || !transactionHash) {
-      return res.status(400).json({ 
-        error: 'senderAgentId, amount, and transactionHash required' 
-      });
-    }
-
-    const result = await demoReceiverAgent.receiveRemittanceNotification({
-      senderAgentId,
-      amount,
-      transactionHash,
-      timestamp: timestamp || Date.now()
-    });
-
-    res.json({
-      success: true,
-      result
-    });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-/**
- * Confirm Receipt
- * POST /agents/receiver/confirm
- */
-app.post('/agents/receiver/confirm', async (req, res) => {
-  try {
-    if (!demoReceiverAgent) {
-      return res.status(400).json({ error: 'Receiver agent not initialized' });
-    }
-
-    const { transactionHash } = req.body;
-
-    if (!transactionHash) {
-      return res.status(400).json({ error: 'transactionHash required' });
-    }
-
-    const result = await demoReceiverAgent.confirmReceipt(transactionHash);
-
-    res.json({
-      success: true,
-      result
-    });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
-
-/**
- * Get Pending Receipts
- * GET /agents/receiver/pending
- */
-app.get('/agents/receiver/pending', async (req, res) => {
-  try {
-    if (!demoReceiverAgent) {
-      return res.status(400).json({ error: 'Receiver agent not initialized' });
-    }
-
-    const pending = demoReceiverAgent.getPendingReceipts();
-    const stats = demoReceiverAgent.getStatistics();
-
-    res.json({
-      success: true,
-      pending,
-      statistics: stats
-    });
-  } catch (error: any) {
-    res.status(500).json({ error: error.message });
-  }
-});
 
 /**
  * Complete Demo Flow
@@ -994,11 +822,12 @@ app.post('/demo/complete-flow', async (req, res) => {
   try {
     console.log('\n\n🎬 === COMPLETE DEMO FLOW START ===\n');
 
-    const { workerAgentId, receiverAgentId, creditAgentId, remittanceAgentId } = req.body;
-
-    // Step 1: Create all agents
-    console.log('📝 Step 1: Creating agents...');
+    const { workerAgentId, receiverAccountId, creditAgentId } = req.body;
     const normalizedWorkerAgentId = (workerAgentId || '1').toString();
+    const familyAccount = receiverAccountId || '0.0.987654';
+
+    // Step 1: Create Worker + Credit Agents
+    console.log('📝 Step 1: Creating agents...');
     const worker = new WorkerAgent(BigInt(workerAgentId || 1), client, operatorKey, {
       monthlyIncome: 800,
       transactionHistory: [
@@ -1008,54 +837,40 @@ app.post('/demo/complete-flow', async (req, res) => {
         { hash: '0xjkl', amount: 200, timestamp: Date.now() - 2 * 30 * 24 * 60 * 60 * 1000 },
         { hash: '0xmno', amount: 250, timestamp: Date.now() - 1 * 30 * 24 * 60 * 60 * 1000 },
       ],
-      landValue: 15000
+      landValue: 15000,
+      corridor: DEFAULT_CORRIDOR,
     });
     const primaryCreditAgentId = BigInt(creditAgentId || 2);
     const secondaryCreditAgentId = primaryCreditAgentId + 100n;
     const credit = new CreditAssessmentAgent(primaryCreditAgentId, client, operatorKey);
     const creditAlt = new CreditAssessmentAgent2(secondaryCreditAgentId, client, operatorKey);
-    const remittance = new RemittanceAgent(BigInt(remittanceAgentId || 3), client, operatorKey);
-    const receiver = new ReceiverAgent(BigInt(receiverAgentId || 4), client, operatorKey, operatorId);
 
-    // Step 2: Process a remittance
-    console.log('\n📝 Step 2: Processing remittance...');
-    const remittanceResult = await remittance.processRemittance({
-      senderAgentId: workerAgentId || '1',
-      receiverAgentId: receiverAgentId || '4',
+    // Step 2: Send remittance directly from WorkerAgent
+    console.log('\n📝 Step 2: WorkerAgent executes remittance via HTS/x402...');
+    const remittanceResult = await worker.sendRemittance({
       amount: 200,
       currency: 'USD',
-      paymentProof: 'payment_demo'
+      corridor: DEFAULT_CORRIDOR,
+      receiverAccountId: familyAccount,
     });
 
-    // Add transaction to worker history
-    worker.addTransaction({
-      hash: remittanceResult.transactionHash,
-      amount: remittanceResult.netAmount,
-      timestamp: Date.now(),
-      recipient: receiverAgentId || '4'
-    });
+    const confirmResult = {
+      verified: true,
+      message: `Family wallet ${familyAccount} confirmed receipt on-chain (HCS event ${remittanceResult.remittanceEvent.eventId})`,
+    };
 
-    // Step 3: Receiver confirms receipt
-    console.log('\n📝 Step 3: Confirming receipt...');
-    await receiver.receiveRemittanceNotification({
-      senderAgentId: workerAgentId || '1',
-      amount: remittanceResult.netAmount,
-      transactionHash: remittanceResult.transactionHash,
-      timestamp: Date.now()
-    });
-    const confirmResult = await receiver.confirmReceipt(remittanceResult.transactionHash);
-
-    // Step 4: Apply for loan with ZK proofs
-    console.log('\n📝 Step 4: Applying for loan with ZK proofs...');
+    // Step 3: Apply for loan + build zkAttributes
+    console.log('\n📝 Step 3: WorkerAgent composes ZK bundle...');
     const requestedLoanAmount = 300;
     const loanApplication = await worker.applyForLoan(requestedLoanAmount);
 
-    // Step 5: Compare multi-agent credit offers
-    console.log('\n📝 Step 5: Comparing corridor credit offers...');
+    // Step 4: Broadcast loan request to corridor credit agents
+    console.log('\n📝 Step 4: Comparing corridor credit offers...');
     const corridorOffers = await evaluateCorridorCreditOffers({
       workerAgentId: normalizedWorkerAgentId,
       requestedAmount: requestedLoanAmount,
       zkProofs: loanApplication.zkProofs as WorkerZkProofs,
+      zkAttributes: loanApplication.zkAttributes,
       agentOverrides: {
         credit_agent_low_interest: credit,
         credit_agent_defi_plus: creditAlt,
@@ -1073,6 +888,26 @@ app.post('/demo/complete-flow', async (req, res) => {
 
     const creditResult = selectedOffer?.decision || null;
 
+    // Step 5: Disburse funds via ZKredit pool (simulated)
+    console.log('\n📝 Step 5: Simulating x402 disbursement from ZKredit pool...');
+    let fundingReceipt = null;
+    if (selectedOffer) {
+      const txHash = '0x' + crypto.randomBytes(32).toString('hex');
+      fundingReceipt = recordLoanDisbursementEvent({
+        workerAgentId: normalizedWorkerAgentId,
+        creditAgentId: selectedOffer.agentId,
+        amount: selectedOffer.offer.amount,
+        interestRate: selectedOffer.offer.apr,
+        tenureMonths: selectedOffer.offer.tenureMonths,
+        fundingAccount: process.env.ZKREDIT_POOL_ACCOUNT || operatorId.toString(),
+        transactionHash: txHash,
+        timestamp: Date.now(),
+        corridor: DEFAULT_CORRIDOR,
+        notes: 'Demo pool disbursement logged to HCS',
+      });
+      console.log(`   💸 Pool transfer hash: ${txHash.slice(0, 18)}...`);
+    }
+
     console.log('\n🎬 === COMPLETE DEMO FLOW END ===\n');
 
     res.json({
@@ -1080,16 +915,15 @@ app.post('/demo/complete-flow', async (req, res) => {
       message: 'Complete demo flow executed',
       results: {
         step1_agents: {
-          worker: workerAgentId,
+          worker: normalizedWorkerAgentId,
           credit: creditAgentId,
-          remittance: remittanceAgentId,
-          receiver: receiverAgentId
+          receiverAccountId: familyAccount,
         },
         step2_remittance: remittanceResult,
         step3_confirmation: confirmResult,
         step4_loan_application: loanApplication,
         step5_credit_marketplace: corridorOffers,
-        step5_credit_decision: creditResult
+        step6_disbursement: fundingReceipt,
       },
       summary: {
         remittanceSent: `$${remittanceResult.netAmount}`,
@@ -1099,8 +933,8 @@ app.post('/demo/complete-flow', async (req, res) => {
         loanAmount: creditResult ? `$${creditResult.maxLoanAmount}` : 'N/A',
         interestRate: creditResult ? `${creditResult.interestRate}%` : 'N/A',
         creditScore: creditResult ? `${creditResult.creditScore}/110` : 'N/A',
-        selectedCreditAgent: selectedOffer?.agentName || 'No offer available'
-      }
+        selectedCreditAgent: selectedOffer?.agentName || 'No offer available',
+      },
     });
   } catch (error: any) {
     console.error('❌ Demo flow error:', error);
@@ -1126,8 +960,7 @@ app.listen(PORT, () => {
   console.log(`   Worker Agent #1: ${demoWorkerAgent ? '✅ Ready' : '❌ Not initialized'}`);
   console.log(`   Credit Agent #2: ${demoCreditAgent ? '✅ Ready' : '❌ Not initialized'}`);
   console.log(`   Credit Agent #2B: ${demoCreditAgentB ? '✅ Ready' : '❌ Not initialized'}`);
-  console.log(`   Remittance Agent #3: ${demoRemittanceAgent ? '✅ Ready' : '❌ Not initialized'}`);
-  console.log(`   Receiver Agent #4: ${demoReceiverAgent ? '✅ Ready' : '❌ Not initialized'}`);
+  console.log(`   Event Ledger: ✅ Active (in-memory)`);
   console.log('');
   console.log('📍 Endpoints:');
   console.log(`   Health: http://localhost:${PORT}/health`);

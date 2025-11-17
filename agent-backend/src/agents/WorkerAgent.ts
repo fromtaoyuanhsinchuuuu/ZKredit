@@ -1,11 +1,17 @@
 import { Client, PrivateKey } from '@hashgraph/sdk';
 import * as crypto from 'crypto';
 import { generateCreditHistoryNoirProof } from '../services/noirCreditHistory';
+import {
+  recordRemittanceEvent,
+  summarizeRemittanceHistory,
+  deriveZkAttributesFromRemittances,
+} from '../services/eventLedger';
 
 export class WorkerAgent {
   private agentId: bigint;
   private client: Client;
   private privateKey: PrivateKey;
+  private defaultCorridor: string;
   
   private privateData: {
     monthlyIncome: number;
@@ -20,6 +26,7 @@ export class WorkerAgent {
     this.agentId = agentId;
     this.client = client;
     this.privateKey = privateKey;
+    this.defaultCorridor = privateData?.corridor || 'middle-east-to-philippines';
     this.privateData = {
       monthlyIncome: privateData?.monthlyIncome || 800,
       transactionHistory: privateData?.transactionHistory || [],
@@ -27,6 +34,58 @@ export class WorkerAgent {
       landTitleIPFS: privateData?.landTitleIPFS || 'QmLandTitle',
       gpsCoordinates: privateData?.gpsCoordinates || [16.8661, 96.1951],
       employerSignature: privateData?.employerSignature || '0xemployer'
+    };
+  }
+
+  async sendRemittance(params: {
+    receiverAccountId: string;
+    amount: number;
+    currency?: string;
+    corridor?: string;
+  }) {
+    const corridor = params.corridor || this.defaultCorridor;
+    const currency = params.currency || 'USD';
+    console.log('\n\n💸 WorkerAgent initiating remittance');
+    console.log(`   👷 Worker: Agent #${this.agentId.toString()}`);
+    console.log(`   👪 Receiver Account: ${params.receiverAccountId}`);
+    console.log(`   🌍 Corridor: ${corridor}`);
+    console.log(`   💰 Amount: $${params.amount} ${currency}`);
+
+    const fee = this.calculateRemittanceFee(params.amount);
+    const netAmount = params.amount - fee;
+    console.log(`   🧮 Fee: $${fee.toFixed(2)} (0.7% min $0.50)`);
+    console.log(`   📤 Net amount to family: $${netAmount.toFixed(2)}`);
+
+    const txHash = '0x' + crypto.randomBytes(32).toString('hex');
+    await new Promise(resolve => setTimeout(resolve, 500));
+    console.log('   ✅ Simulated HTS/x402 transfer complete');
+    console.log(`   🔗 HashScan: ${txHash.slice(0, 20)}...`);
+
+    const remittanceEvent = recordRemittanceEvent({
+      workerAgentId: this.agentId.toString(),
+      remittanceAgentId: this.agentId.toString(),
+      receiverAgentId: params.receiverAccountId,
+      corridor,
+      amount: params.amount,
+      fee,
+      netAmount,
+      currency,
+      transactionHash: txHash,
+      timestamp: Date.now(),
+    });
+
+    console.log('   📝 HCS RemittanceEvent logged');
+    console.log('   🧾 Stored for future ZK attributes');
+
+    return {
+      success: true,
+      transactionHash: txHash,
+      fee,
+      netAmount,
+      corridor,
+      currency,
+      remittanceEvent,
+      message: `Remittance of $${netAmount.toFixed(2)} sent to family account ${params.receiverAccountId}`,
     };
   }
 
@@ -82,13 +141,33 @@ export class WorkerAgent {
     const income = await this.generateIncomeProof(500);
     const credit = await this.generateCreditHistoryProof(1);
     const collateral = await this.generateCollateralProof(10000);
+    const remittanceAttributes = this.getZkAttributesFromRemittances();
+    console.log('📊 Remittance-based zkAttributes:', remittanceAttributes);
     console.log('=== ALL ZK PROOFS GENERATED ===\n');
-    return { success: true, message: 'Loan application submitted', zkProofs: { income, creditHistory: credit, collateral } };
+    return {
+      success: true,
+      message: 'Loan application submitted',
+      zkProofs: { income, creditHistory: credit, collateral },
+      zkAttributes: remittanceAttributes,
+    };
   }
 
   addTransaction(tx: any) {
     this.privateData.transactionHistory.push(tx);
     console.log('Transaction added. Total: ' + this.privateData.transactionHistory.length);
+  }
+
+  getRemittanceSummary() {
+    return summarizeRemittanceHistory(this.agentId.toString());
+  }
+
+  getZkAttributesFromRemittances() {
+    return deriveZkAttributesFromRemittances(this.agentId.toString());
+  }
+
+  private calculateRemittanceFee(amount: number) {
+    const percentage = amount * 0.007;
+    return Math.max(percentage, 0.5);
   }
 
   private mockProof(inputs: any): string {

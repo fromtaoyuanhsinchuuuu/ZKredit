@@ -41,6 +41,7 @@ export class CreditAssessmentAgent {
       creditHistory: any;
       collateral: any;
     };
+    zkAttributes?: Record<string, any>;
   }): Promise<{
     approved: boolean;
     creditScore: number;
@@ -52,6 +53,9 @@ export class CreditAssessmentAgent {
     console.log('\n\n🧠 === CREDIT ASSESSMENT START ===');
     console.log(`📨 Application from Agent #${application.applicantAgentId}`);
     console.log(`💰 Requested Amount: $${application.requestedAmount}`);
+    if (application.zkAttributes) {
+      console.log('🧾 zkAttributes summary:', application.zkAttributes);
+    }
     console.log('🔐 Verifying ZK Proofs...\n');
 
     // Step 1: Verify all ZK proofs

@@ -296,9 +296,8 @@ curl -X POST http://localhost:3003/demo/complete-flow \
   -H "Content-Type: application/json" \
   -d '{
     "workerAgentId": "1",
-    "receiverAgentId": "4",
-    "creditAgentId": "2",
-    "remittanceAgentId": "3"
+    "receiverAccountId": "0.0.987654",
+    "creditAgentId": "2"
   }' | jq
 ```
 
@@ -601,8 +600,7 @@ npm start
 Agent Backend Ready:
   - Worker Agent: Generate ZK proofs
   - Credit Agent: Verify proofs with AI
-  - Remittance Agent: Process payments
-  - Receiver Agent: Confirm receipts
+  - Event Ledger: Store remittances + zkAttributes
 ```
 
 #### 5.4 Test Health Endpoint
@@ -635,9 +633,8 @@ curl -X POST http://localhost:3003/demo/complete-flow \
   -H "Content-Type: application/json" \
   -d '{
     "workerAgentId": "1",
-    "receiverAgentId": "4",
-    "creditAgentId": "2",
-    "remittanceAgentId": "3"
+    "receiverAccountId": "0.0.987654",
+    "creditAgentId": "2"
   }' | jq
 ```
 
@@ -1046,117 +1043,60 @@ Consider:
 
 ---
 
-### Agent 3: Remittance Agent
+### Remittance Flow (Worker Agent + Event Ledger)
 
-**Role**: Processes cross-border payments and builds credit history
+**Role**: The WorkerAgent now handles the entire remittance lifecycle—simulating HTS/x402 transfers, logging to HCS, and deriving zkAttributes for credit.
 
-**File**: `agent-backend/src/agents/RemittanceAgent.ts`
+**Files**:
+- `agent-backend/src/agents/WorkerAgent.ts` → `sendRemittance` orchestration
+- `agent-backend/src/services/eventLedger.ts` → in-memory HCS-style ledger & zk attribute derivation
 
-**Key Methods:**
+#### Send Remittance
 
-**`processRemittance(params)`**
 ```typescript
-// Process cross-border payment
-const result = await remittanceAgent.processRemittance({
-  senderAgentId: "1",
-  receiverAgentId: "4",
+const worker = new WorkerAgent(BigInt(1), client, operatorKey);
+const result = await worker.sendRemittance({
   amount: 200,
-  currency: "USD"
+  receiverAccountId: "0.0.987654",
+  currency: "USD",
+  corridor: "middle-east-to-philippines",
 });
 
-// Result:
-// {
+// result => {
 //   success: true,
 //   transactionHash: "0x21e430fc...",
-//   fee: 1.40,            // 0.7% of $200
-//   netAmount: 198.60,    // $200 - $1.40
-//   message: "Successfully sent $198.60 to Agent #4"
+//   fee: 1.40,
+//   netAmount: 198.60,
+//   corridor: "middle-east-to-philippines",
+//   remittanceEvent: { eventId, timestamp, ... }
 // }
 ```
 
-**Fee Structure:**
-```typescript
-// 0.7% fee with $0.50 minimum
-const fee = Math.max(amount * 0.007, 0.50);
+#### API Call
 
-// Examples:
-// $50 remittance → $0.50 fee (1% effective)
-// $200 remittance → $1.40 fee (0.7%)
-// $1000 remittance → $7.00 fee (0.7%)
+```bash
+curl -X POST http://localhost:3003/agents/worker/send-remittance \
+  -H "Content-Type: application/json" \
+  -d '{
+    "amount": 200,
+    "receiverAccountId": "0.0.987654",
+    "currency": "USD"
+  }'
 ```
 
-**Credit Building:**
-```typescript
-// Every successful remittance adds to credit history
-await recordToERC8004({
-  agentId: senderAgentId,
-  transactionHash: txHash,  // Hashed for privacy
-  amount: hashedAmount,     // Never reveal exact amount
-  timestamp: Date.now()
-});
+#### Ledger + zkAttributes
 
-// Later used in Credit History ZK Proof:
-// "I have ≥ 5 verified transactions" ← Proved without revealing amounts
+```bash
+curl http://localhost:3003/agents/worker/remittances/1 | jq
 ```
 
-**x402 Payment Protocol (Future):**
-```typescript
-// Micropayment per API call
-const x402Config = {
-  pricePerRequest: 0.01,  // $0.01 per verification
-  paymentToken: "HBAR",
-  recipientAccount: "0.0.XXXXXX"
-};
-```
+Returns history, a 6-month rolling summary, and derived attributes such as `stable_remitter`, `total_remitted_band`, and `account_age_band`. These attributes are automatically attached to `WorkerAgent.applyForLoan()` and forwarded to the AI credit marketplace.
 
----
+**Fee Structure:** identical 0.7% fee (min $0.50) enforced inside `WorkerAgent.calculateRemittanceFee`.
 
-### Agent 4: Receiver Agent
+**Credit Building:** `eventLedger.recordRemittanceEvent` stores hashed transaction metadata, which later feeds `deriveZkAttributesFromRemittances` for Noir-friendly inputs.
 
-**Role**: Beneficiary who confirms receipts and updates sender reputation
-
-**File**: `agent-backend/src/agents/ReceiverAgent.ts`
-
-**Key Methods:**
-
-**`confirmReceipt(params)`**
-```typescript
-// Confirm received remittance
-const result = await receiverAgent.confirmReceipt({
-  remittanceId: "rem_123",
-  expectedAmount: 198.60,
-  senderAgentId: "1"
-});
-
-// Updates sender reputation on ERC-8004:
-await updateSenderReputation({
-  agentId: "1",
-  rating: 100,        // +100 for successful remittance
-  comment: "Reliable sender, always on time"
-});
-```
-
-**Reputation Impact:**
-```typescript
-// Sender's on-chain reputation grows with confirmations
-confirmations = 10 → +1000 reputation points
-→ Qualifies for +10 credit score bonus
-→ Unlocks higher loan amounts
-→ Reduces interest rates
-```
-
-**Loan Guarantee Feature:**
-```typescript
-// Receiver can vouch for sender's creditworthiness
-await receiverAgent.requestLoanGuarantee({
-  senderAgentId: "1",
-  guaranteeAmount: 500,  // Willing to guarantee up to $500
-  reason: "Family member with proven reliability"
-});
-
-// If sender defaults, receiver's reputation at risk
-// Creates social credit network effect
-```
+**Receiver Confirmations:** The legacy `ReceiverAgent` has been retired—the frontend now calls `GET /agents/worker/remittances/:agentId` after each transfer, which simulates the family wallet acknowledgment and logs an HCS receipt.
 
 ---
 
@@ -1580,9 +1520,8 @@ Execute complete end-to-end flow (remittance → loan approval).
 ```json
 {
   "workerAgentId": "1",
-  "receiverAgentId": "4",
-  "creditAgentId": "2",
-  "remittanceAgentId": "3"
+  "receiverAccountId": "0.0.987654",
+  "creditAgentId": "2"
 }
 ```
 
@@ -1596,7 +1535,8 @@ Execute complete end-to-end flow (remittance → loan approval).
     "step2_remittance": { ... },
     "step3_confirmation": { ... },
     "step4_loan_application": { ... },
-    "step5_credit_decision": { ... }
+    "step5_credit_marketplace": { ... },
+    "step6_disbursement": { ... }
   },
   "summary": {
     "remittanceSent": "$198.6",

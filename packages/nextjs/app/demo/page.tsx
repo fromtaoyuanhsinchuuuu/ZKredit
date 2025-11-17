@@ -13,12 +13,48 @@ interface AgentProfile {
   landValue?: number;
 }
 
+interface RemittanceEvent {
+  eventId: string;
+  workerAgentId: string;
+  remittanceAgentId: string;
+  receiverAgentId: string;
+  corridor: string;
+  amount: number;
+  fee: number;
+  netAmount: number;
+  currency: string;
+  transactionHash: string;
+  timestamp: number;
+}
+
 interface RemittanceResult {
   success: boolean;
   transactionHash: string;
   fee: number;
   netAmount: number;
+  corridor: string;
+  currency: string;
+  remittanceEvent: RemittanceEvent;
   message: string;
+}
+
+interface RemittanceLedgerData {
+  history: RemittanceEvent[];
+  summary: {
+    monthsWithRemittance: number;
+    totalVolume: number;
+    accountAgeMonths: number;
+    totalTransactions: number;
+    events: RemittanceEvent[];
+  };
+  zkAttributes: {
+    stable_remitter: boolean;
+    total_remitted_band: string;
+    account_age_band: string;
+    months_with_activity: number;
+    total_transactions: number;
+    [key: string]: unknown;
+  };
 }
 
 interface LoanResult {
@@ -27,7 +63,40 @@ interface LoanResult {
   maxLoanAmount: number;
   interestRate: number;
   reason: string;
-  aiAnalysis: string;
+  aiAnalysis?: string;
+  details?: {
+    aiAnalysis?: string;
+    [key: string]: unknown;
+  };
+}
+
+interface CreditOffer {
+  agentId: string;
+  agentName: string;
+  sponsor: string;
+  corridor: string;
+  agentType: string;
+  tagline: string;
+  strengths: string[];
+  status: string;
+  offer: {
+    amount: number;
+    apr: number;
+    tenureMonths: number;
+    disbursementHours: number;
+    repaymentFrequency: string;
+    approved: boolean;
+    rationale: string;
+    creditScore: number;
+  };
+  underwritingSummary?: {
+    incomeBand: string;
+    employmentMonths: number;
+    repaymentHistory: string;
+    hcsTopic: string;
+  };
+  decision: LoanResult;
+  rank?: number;
 }
 
 export default function DemoPage() {
@@ -43,33 +112,60 @@ export default function DemoPage() {
     role: "receiver",
     name: "Fatima",
   });
+  const [familyAccountId, setFamilyAccountId] = useState("0.0.987654");
   const [remittanceAmount, setRemittanceAmount] = useState(200);
   const [loanAmount, setLoanAmount] = useState(300);
   const [remittanceResult, setRemittanceResult] = useState<RemittanceResult | null>(null);
+  const [remittanceLedger, setRemittanceLedger] = useState<RemittanceLedgerData | null>(null);
+  const [loanMarketplace, setLoanMarketplace] = useState<any | null>(null);
+  const [loanOffers, setLoanOffers] = useState<CreditOffer[]>([]);
+  const [selectedOffer, setSelectedOffer] = useState<CreditOffer | null>(null);
   const [loanResult, setLoanResult] = useState<LoanResult | null>(null);
   const [loading, setLoading] = useState(false);
 
   // API 調用
   const API_BASE = "http://localhost:3003";
+  const DEMO_WORKER_AGENT_ID = "1";
+
+  const applyOfferSelection = (offer: CreditOffer | null) => {
+    setSelectedOffer(offer);
+    if (offer) {
+      setLoanResult({
+        approved: offer.decision.approved,
+        creditScore: offer.decision.creditScore,
+        maxLoanAmount: offer.decision.maxLoanAmount,
+        interestRate: offer.decision.interestRate,
+        reason: offer.decision.reason,
+        aiAnalysis: offer.decision.aiAnalysis || offer.decision.details?.aiAnalysis || offer.offer.rationale,
+        details: offer.decision.details,
+      });
+    } else {
+      setLoanResult(null);
+    }
+  };
 
   const handleSendRemittance = async () => {
+    if (!familyAccountId) {
+      alert("Please provide a receiver account ID before sending remittances.");
+      return;
+    }
+
     setLoading(true);
     try {
-      const response = await fetch(`${API_BASE}/agents/remittance/send`, {
+      const response = await fetch(`${API_BASE}/agents/worker/send-remittance`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          senderAgentId: "1",
-          receiverAgentId: "4",
           amount: remittanceAmount,
+          receiverAccountId: familyAccountId,
           currency: "USD",
         }),
       });
       const data = await response.json();
 
-      // Backend returns {success: true, result: {...}}
       if (data.success && data.result) {
         setRemittanceResult(data.result);
+        setRemittanceLedger(null);
         setCurrentStep("confirm");
       } else {
         throw new Error(data.error || "Remittance failed");
@@ -83,19 +179,41 @@ export default function DemoPage() {
   };
 
   const handleConfirmReceipt = async () => {
+    if (!remittanceResult) {
+      alert("No remittance to verify yet.");
+      return;
+    }
+
     setLoading(true);
     try {
-      await fetch(`${API_BASE}/agents/receiver/confirm`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          receiverAgentId: "4",
-          transactionHash: remittanceResult?.transactionHash,
-        }),
+      const response = await fetch(`${API_BASE}/agents/worker/remittances/${DEMO_WORKER_AGENT_ID}`);
+      const data = await response.json();
+
+      if (!data.success) {
+        throw new Error(data.error || "Ledger sync failed");
+      }
+
+      setRemittanceLedger({
+        history: data.history || [],
+        summary: data.summary || {
+          monthsWithRemittance: 0,
+          totalVolume: 0,
+          accountAgeMonths: 0,
+          totalTransactions: 0,
+          events: [],
+        },
+        zkAttributes: {
+          stable_remitter: Boolean(data.zkAttributes?.stable_remitter),
+          total_remitted_band: data.zkAttributes?.total_remitted_band || "0-300",
+          account_age_band: data.zkAttributes?.account_age_band || "0-3m",
+          months_with_activity: data.zkAttributes?.months_with_activity || 0,
+          total_transactions: data.zkAttributes?.total_transactions || 0,
+        },
       });
       setCurrentStep("zkproof");
     } catch (error) {
       console.error("Confirmation error:", error);
+      alert("Could not sync remittance ledger. Check the backend logs.");
     } finally {
       setLoading(false);
     }
@@ -114,29 +232,46 @@ export default function DemoPage() {
       });
       const proofsData = await proofsResponse.json();
 
-      // Backend returns {success: true, result: {...}}
-      if (!proofsData.success || !proofsData.result) {
+      if (!proofsData.success || !proofsData.result?.zkProofs) {
         throw new Error("Failed to generate ZK proofs");
       }
 
-      // Step 2: Submit to credit agent
-      const loanResponse = await fetch(`${API_BASE}/agents/credit/process-loan`, {
+      // Step 2: Broadcast to corridor AI credit agents marketplace
+      const loanResponse = await fetch(`${API_BASE}/agents/credit/offers`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          applicantAgentId: "1",
+          workerAgentId: DEMO_WORKER_AGENT_ID,
           requestedAmount: loanAmount,
           zkProofs: proofsData.result.zkProofs,
+          zkAttributes: proofsData.result.zkAttributes,
         }),
       });
       const loanData = await loanResponse.json();
 
-      // Backend returns {success: true, result: {...}}
-      if (loanData.success && loanData.result) {
-        setLoanResult(loanData.result);
+      if (loanData.success && loanData.offers) {
+        const marketplace = loanData.offers;
+        const normalizedOffers: CreditOffer[] = (marketplace.offers || []).map((offer: CreditOffer) => {
+          const rawDecision = offer.decision || ({} as LoanResult);
+          return {
+            ...offer,
+            decision: {
+              ...rawDecision,
+              aiAnalysis: rawDecision.aiAnalysis || rawDecision.details?.aiAnalysis || offer.offer.rationale,
+              details: rawDecision.details,
+            },
+          };
+        });
+
+        setLoanMarketplace(marketplace);
+        setLoanOffers(normalizedOffers);
+
+        const preferredOfferId = marketplace.selectedOffer?.agentId;
+        const defaultOffer = normalizedOffers.find(o => o.agentId === preferredOfferId) || normalizedOffers[0] || null;
+        applyOfferSelection(defaultOffer);
         setCurrentStep("result");
       } else {
-        throw new Error(loanData.error || "Loan processing failed");
+        throw new Error(loanData.error || "Loan marketplace unavailable");
       }
     } catch (error) {
       console.error("Loan application error:", error);
@@ -276,9 +411,21 @@ export default function DemoPage() {
                       className="input input-bordered"
                     />
                   </div>
+                  <div className="form-control mt-3">
+                    <label className="label">
+                      <span className="label-text">Hedera Account ID</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={familyAccountId}
+                      onChange={e => setFamilyAccountId(e.target.value)}
+                      className="input input-bordered"
+                    />
+                  </div>
                   <div className="mt-4 p-3 bg-secondary/10 rounded">
                     <p className="text-sm">
-                      💡 Your family will confirm receipt of remittance to build your credit reputation
+                      💡 Your family wallet will confirm receipt on-chain so remittances feed into your credit
+                      reputation.
                     </p>
                   </div>
                 </div>
@@ -303,6 +450,7 @@ export default function DemoPage() {
                   <div>
                     <p className="text-sm text-base-content/70">To</p>
                     <p className="font-bold">{receiverProfile.name} (Family)</p>
+                    <p className="text-xs text-base-content/60">Acct: {familyAccountId}</p>
                   </div>
                 </div>
                 <div className="form-control">
@@ -360,6 +508,10 @@ export default function DemoPage() {
                   </code>
                 </div>
                 <div className="flex justify-between">
+                  <span>Corridor:</span>
+                  <span>{remittanceResult.corridor.replace(/-/g, " → ")}</span>
+                </div>
+                <div className="flex justify-between">
                   <span>Amount Sent:</span>
                   <span className="font-bold">${remittanceAmount}</span>
                 </div>
@@ -374,23 +526,25 @@ export default function DemoPage() {
               </div>
               <div className="mb-6">
                 <p className="mb-2">
-                  <strong>{receiverProfile.name}</strong> needs to confirm receipt:
+                  Sync the family wallet ({familyAccountId}) with the Hedera Consensus Service to log this transfer.
                 </p>
-                <div className="mockup-phone">
-                  <div className="camera"></div>
-                  <div className="display">
-                    <div className="artboard artboard-demo phone-1 bg-base-300 p-4">
-                      <p className="text-sm mb-2">📱 SMS Notification</p>
-                      <p className="text-xs">
-                        You received ${remittanceResult.netAmount.toFixed(2)} from {workerProfile.name}
-                      </p>
-                      <button className="btn btn-xs btn-success mt-2 w-full">Confirm Receipt</button>
-                    </div>
+                <div className="bg-base-200 p-4 rounded space-y-2 text-sm">
+                  <div className="flex justify-between">
+                    <span>Receiver</span>
+                    <span className="font-semibold">{receiverProfile.name}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Account ID</span>
+                    <span className="font-mono">{familyAccountId}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Ledger Topic</span>
+                    <span className="font-mono">0.0.920393</span>
                   </div>
                 </div>
               </div>
               <button className="btn btn-primary w-full" onClick={handleConfirmReceipt} disabled={loading}>
-                {loading ? <span className="loading loading-spinner"></span> : "Family Confirmed Receipt →"}
+                {loading ? <span className="loading loading-spinner"></span> : "Sync Hedera Ledger →"}
               </button>
             </div>
           )}
@@ -457,6 +611,38 @@ export default function DemoPage() {
                     </div>
                   </div>
                 </div>
+                {remittanceLedger && (
+                  <div className="card bg-base-200 border border-primary/30">
+                    <div className="card-body">
+                      <h3 className="card-title text-lg">🌐 Remittance zkAttributes</h3>
+                      <p className="text-sm text-base-content/70">
+                        Derived automatically from HCS events — no additional input required.
+                      </p>
+                      <div className="grid grid-cols-2 gap-3 text-sm mt-3">
+                        <div>
+                          <p className="text-xs text-base-content/60">Months Active</p>
+                          <p className="font-semibold">{remittanceLedger.summary.monthsWithRemittance}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-base-content/60">Total Volume</p>
+                          <p className="font-semibold">${remittanceLedger.summary.totalVolume.toFixed(2)}</p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-base-content/60">Stable Remitter</p>
+                          <p className="font-semibold">
+                            {remittanceLedger.zkAttributes?.stable_remitter ? "Yes" : "Not yet"}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-xs text-base-content/60">Total Band</p>
+                          <p className="font-semibold">
+                            {remittanceLedger.zkAttributes?.total_remitted_band as string}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
               <button className="btn btn-primary w-full mt-6" onClick={() => setCurrentStep("loan")}>
                 Continue to Loan Application →
@@ -499,6 +685,22 @@ export default function DemoPage() {
                     <span>✓ On-chain Reputation:</span>
                     <span className="text-success">Good (recent confirmation)</span>
                   </div>
+                  {remittanceLedger && (
+                    <>
+                      <div className="flex justify-between">
+                        <span>✓ Remittance History:</span>
+                        <span className="text-success">
+                          {remittanceLedger.summary.totalTransactions} tx / {remittanceLedger.summary.monthsWithRemittance} months
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>✓ Stable Remitter:</span>
+                        <span className="text-success">
+                          {remittanceLedger.zkAttributes.stable_remitter ? "Yes" : "Building"}
+                        </span>
+                      </div>
+                    </>
+                  )}
                 </div>
               </div>
               <button className="btn btn-primary w-full" onClick={handleApplyLoan} disabled={loading}>
@@ -508,88 +710,182 @@ export default function DemoPage() {
           )}
 
           {/* Step 7: Result */}
-          {currentStep === "result" && loanResult && (
+          {currentStep === "result" && (
             <div>
-              <h2 className="card-title text-2xl mb-4 justify-center">
-                {loanResult.approved ? "🎉 Loan Approved!" : "❌ Loan Denied"}
-              </h2>
-              {loanResult.approved ? (
-                <div>
-                  <div className="alert alert-success mb-6">
-                    <svg
-                      xmlns="http://www.w3.org/2000/svg"
-                      className="stroke-current shrink-0 h-6 w-6"
-                      fill="none"
-                      viewBox="0 0 24 24"
-                    >
-                      <path
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                        strokeWidth="2"
-                        d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
-                      />
-                    </svg>
-                    <span>Your loan has been approved!</span>
-                  </div>
-                  <div className="stats stats-vertical lg:stats-horizontal shadow w-full mb-6">
-                    <div className="stat">
-                      <div className="stat-title">Credit Score</div>
-                      <div className="stat-value text-primary">{loanResult.creditScore}/110</div>
-                      <div className="stat-desc">Excellent</div>
-                    </div>
-                    <div className="stat">
-                      <div className="stat-title">Approved Amount</div>
-                      <div className="stat-value text-success">${loanResult.maxLoanAmount}</div>
-                      <div className="stat-desc">Max available</div>
-                    </div>
-                    <div className="stat">
-                      <div className="stat-title">Interest Rate</div>
-                      <div className="stat-value text-info">{loanResult.interestRate}%</div>
-                      <div className="stat-desc">Annual APR</div>
-                    </div>
-                  </div>
-                  <div className="card bg-base-200 mb-6">
-                    <div className="card-body">
-                      <h3 className="card-title">🤖 AI Analysis</h3>
-                      <p className="text-sm">{loanResult.reason}</p>
-                    </div>
-                  </div>
-                  <div className="grid md:grid-cols-2 gap-4 mb-6">
-                    <div className="card bg-error/10">
-                      <div className="card-body">
-                        <h4 className="font-bold">🏦 Traditional Bank</h4>
-                        <ul className="text-sm space-y-1">
-                          <li>❌ 5+ documents required</li>
-                          <li>❌ Privacy exposed</li>
-                          <li>❌ 7-14 days processing</li>
-                          <li>❌ 24% APR</li>
-                          <li>❌ $200 appraisal fee</li>
-                        </ul>
+              <h2 className="card-title text-2xl mb-2 justify-center">🏦 Hedera AI Credit Marketplace</h2>
+              <p className="text-center text-sm text-base-content/70 mb-6">
+                Broadcasted to {loanMarketplace?.comparedAgents ?? loanOffers.length} corridor agents for
+                {loanMarketplace?.corridor?.replace(/-/g, " ") || "Middle East → Philippines"}.
+                <span className="block">Choose the offer that best fits Ahmad&apos;s goals.</span>
+              </p>
+              {loanOffers.length > 0 ? (
+                <>
+                  <div className="grid md:grid-cols-2 gap-4 mb-8">
+                    {loanOffers.map(offer => (
+                      <div
+                        key={offer.agentId}
+                        className={`card border transition-all ${
+                          selectedOffer?.agentId === offer.agentId
+                            ? "border-2 border-primary shadow-xl"
+                            : "border-base-300"
+                        }`}
+                      >
+                        <div className="card-body space-y-3">
+                          <div className="flex items-start justify-between">
+                            <div>
+                              <h3 className="text-xl font-bold">{offer.agentName}</h3>
+                              <p className="text-sm text-base-content/70">{offer.sponsor}</p>
+                            </div>
+                            <div className="text-right space-y-1">
+                              {offer.rank === 1 && (
+                                <span className="badge badge-primary badge-outline">Best terms</span>
+                              )}
+                              <span className="badge badge-neutral badge-outline uppercase">{offer.agentType}</span>
+                            </div>
+                          </div>
+                          <p className="text-sm text-base-content/70">{offer.tagline}</p>
+                          <div className="grid grid-cols-2 gap-4 text-sm">
+                            <div>
+                              <p className="text-xs text-base-content/60">Amount</p>
+                              <p className="text-2xl font-bold">${offer.offer.amount}</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-base-content/60">APR</p>
+                              <p className="text-2xl font-bold">{offer.offer.apr}%</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-base-content/60">Tenor</p>
+                              <p className="text-xl font-semibold">{offer.offer.tenureMonths} months</p>
+                            </div>
+                            <div>
+                              <p className="text-xs text-base-content/60">Disbursement</p>
+                              <p className="text-xl font-semibold">~{offer.offer.disbursementHours}h</p>
+                            </div>
+                          </div>
+                          {offer.underwritingSummary && (
+                            <div className="bg-base-200/60 rounded p-3 text-xs space-y-1">
+                              <p className="font-semibold text-base-content/80">Underwriting highlights</p>
+                              <p>Income band: {offer.underwritingSummary.incomeBand}</p>
+                              <p>History: {offer.underwritingSummary.repaymentHistory}</p>
+                            </div>
+                          )}
+                          <ul className="text-xs space-y-1">
+                            {offer.strengths.map(str => (
+                              <li key={str}>• {str}</li>
+                            ))}
+                          </ul>
+                          <button
+                            className={`btn btn-sm ${
+                              selectedOffer?.agentId === offer.agentId ? "btn-primary" : "btn-outline"
+                            }`}
+                            onClick={() => applyOfferSelection(offer)}
+                            disabled={selectedOffer?.agentId === offer.agentId}
+                          >
+                            {selectedOffer?.agentId === offer.agentId ? "Selected" : "Choose offer"}
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                    <div className="card bg-success/10">
-                      <div className="card-body">
-                        <h4 className="font-bold">🔐 ZKredit</h4>
-                        <ul className="text-sm space-y-1">
-                          <li>✅ Zero documents</li>
-                          <li>✅ 100% privacy protected</li>
-                          <li>✅ 3 minutes processing</li>
-                          <li>✅ {loanResult.interestRate}% APR (67% lower!)</li>
-                          <li>✅ $0.01 verification fee</li>
-                        </ul>
-                      </div>
-                    </div>
+                    ))}
                   </div>
-                  <div className="bg-success/20 p-4 rounded-lg">
-                    <p className="text-center font-bold">
-                      💰 You save ${(((24 - loanResult.interestRate) * loanResult.maxLoanAmount) / 100).toFixed(2)} in
-                      interest per year!
-                    </p>
-                  </div>
-                </div>
+                  {selectedOffer && loanResult ? (
+                    <>
+                      <h3 className="text-xl font-bold mb-4 text-center">
+                        {loanResult.approved
+                          ? `🎉 Ahmad accepts ${selectedOffer.agentName}`
+                          : `⚠️ ${selectedOffer.agentName} declined this application`}
+                      </h3>
+                      {loanResult.approved ? (
+                        <div>
+                          <div className="alert alert-success mb-6">
+                            <svg
+                              xmlns="http://www.w3.org/2000/svg"
+                              className="stroke-current shrink-0 h-6 w-6"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth="2"
+                                d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"
+                              />
+                            </svg>
+                            <span>{selectedOffer.agentName} wires the funds instantly.</span>
+                          </div>
+                          <div className="stats stats-vertical lg:stats-horizontal shadow w-full mb-6">
+                            <div className="stat">
+                              <div className="stat-title">Credit Score</div>
+                              <div className="stat-value text-primary">{loanResult.creditScore}/110</div>
+                              <div className="stat-desc">All proofs verified</div>
+                            </div>
+                            <div className="stat">
+                              <div className="stat-title">Approved Amount</div>
+                              <div className="stat-value text-success">${loanResult.maxLoanAmount}</div>
+                              <div className="stat-desc">Matches corridor cap</div>
+                            </div>
+                            <div className="stat">
+                              <div className="stat-title">Interest Rate</div>
+                              <div className="stat-value text-info">{loanResult.interestRate ?? 0}%</div>
+                              <div className="stat-desc">Annual APR</div>
+                            </div>
+                          </div>
+                          <div className="card bg-base-200 mb-6">
+                            <div className="card-body">
+                              <h3 className="card-title">🤖 AI Analysis</h3>
+                              <p className="text-sm">{loanResult.reason}</p>
+                            </div>
+                          </div>
+                          <div className="grid md:grid-cols-2 gap-4 mb-6">
+                            <div className="card bg-error/10">
+                              <div className="card-body">
+                                <h4 className="font-bold">🏦 Traditional Bank</h4>
+                                <ul className="text-sm space-y-1">
+                                  <li>❌ 5+ documents required</li>
+                                  <li>❌ Privacy exposed</li>
+                                  <li>❌ 7-14 days processing</li>
+                                  <li>❌ 24% APR</li>
+                                  <li>❌ $200 appraisal fee</li>
+                                </ul>
+                              </div>
+                            </div>
+                            <div className="card bg-success/10">
+                              <div className="card-body">
+                                <h4 className="font-bold">🤝 {selectedOffer.agentName}</h4>
+                                <ul className="text-sm space-y-1">
+                                  <li>✅ Zero documents</li>
+                                  <li>✅ 100% privacy protected</li>
+                                  <li>✅ 3 minutes processing</li>
+                                  <li>✅ {loanResult.interestRate ?? 0}% APR (67% lower!)</li>
+                                  <li>✅ $0.01 verification fee</li>
+                                </ul>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="bg-success/20 p-4 rounded-lg">
+                            <p className="text-center font-bold">
+                              💰 Savings vs. 24% bank APR: $
+                              {loanResult.maxLoanAmount
+                                ? (((24 - (loanResult.interestRate ?? 0)) * loanResult.maxLoanAmount) / 100).toFixed(2)
+                                : "0.00"}
+                              /year
+                            </p>
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="alert alert-error">
+                          <span>{loanResult.reason}</span>
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="alert alert-warning">
+                      <span>Select an offer to see approval details.</span>
+                    </div>
+                  )}
+                </>
               ) : (
-                <div className="alert alert-error">
-                  <span>{loanResult.reason}</span>
+                <div className="alert alert-warning">
+                  <span>No credit agents responded. Please try again or adjust the loan amount.</span>
                 </div>
               )}
               <button
@@ -597,6 +893,9 @@ export default function DemoPage() {
                 onClick={() => {
                   setCurrentStep("wallet");
                   setRemittanceResult(null);
+                  setLoanMarketplace(null);
+                  setLoanOffers([]);
+                  setSelectedOffer(null);
                   setLoanResult(null);
                 }}
               >
