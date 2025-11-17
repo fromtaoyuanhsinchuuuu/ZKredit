@@ -3,11 +3,11 @@ import Groq from 'groq-sdk';
 import { verifyCreditHistoryNoirProof } from '../services/noirCreditHistory';
 
 /**
- * Credit Assessment Agent - ZK Verifier
+ * Credit Assessment Agent 1 - ZK Verifier
  * Verifies ZK proofs and calculates credit scores
  * Uses AI (Groq) for intelligent decision-making
  */
-export class CreditAssessmentAgent {
+export class CreditAssessmentAgent1 {
   private agentId: bigint;
   private client: Client;
   private privateKey: PrivateKey;
@@ -24,8 +24,12 @@ export class CreditAssessmentAgent {
     this.privateKey = privateKey;
     
     // Initialize Groq AI
+    const apiKey = process.env.GROQ_API_KEY;
+    if (!apiKey) {
+      console.warn('⚠️  GROQ_API_KEY missing in env, will use fallback decisions only');
+    }
     this.groq = new Groq({
-      apiKey: process.env.GROQ_API_KEY
+      apiKey: apiKey || 'dummy-key'
     });
   }
 
@@ -64,14 +68,16 @@ export class CreditAssessmentAgent {
     // Step 2: Calculate credit score
     const creditScore = await this.calculateCreditScore(
       verificationResults,
-      application.applicantAgentId
+      application.applicantAgentId,
+      application.zkAttributes
     );
 
     // Step 3: Make decision using AI
     const decision = await this.makeDecisionWithAI(
       creditScore,
       application.requestedAmount,
-      verificationResults
+      verificationResults,
+      application.zkAttributes
     );
 
     // Step 4: Log to blockchain (ERC-8004)
@@ -125,16 +131,21 @@ export class CreditAssessmentAgent {
 
     // Verify Credit History Proof
     let creditValid = false;
-    if (zkProofs.creditHistory?.noirArtifacts) {
-      creditValid = await verifyCreditHistoryNoirProof(zkProofs.creditHistory.noirArtifacts);
+    const creditProof = zkProofs.creditHistory;
+    if (!creditProof || !creditProof.publicInputs) {
+      console.warn('⚠️  Credit history proof missing public inputs');
     } else {
-      console.warn('⚠️  Credit history proof missing Noir artifacts');
+      // Basic format check first
+      const basicValid = this.verifyProof(creditProof, 'credit_history');
+      if (basicValid && creditProof.noirArtifacts) {
+        creditValid = await verifyCreditHistoryNoirProof(creditProof.noirArtifacts);
+      }
+      console.log('✅ Credit History Proof Verified (Noir):', creditValid);
+      console.log(`   Public: transactions >= ${creditProof.publicInputs.minimumTransactions}`);
+      console.log(`   Public: Merkle Root = ${creditProof.publicInputs.merkleRoot.slice(0, 10)}...`);
+      console.log(`   Public Noir Inputs: ${creditProof.noirArtifacts?.noirPublicInputs.join(', ') || 'n/a'}`);
+      console.log('   ❌ Private: Exact count and amounts HIDDEN\n');
     }
-    console.log('✅ Credit History Proof Verified (Noir):', creditValid);
-    console.log(`   Public: transactions >= ${zkProofs.creditHistory.publicInputs.minimumTransactions}`);
-    console.log(`   Public: Merkle Root = ${zkProofs.creditHistory.publicInputs.merkleRoot.slice(0, 10)}...`);
-    console.log(`   Public Noir Inputs: ${zkProofs.creditHistory.noirArtifacts?.noirPublicInputs.join(', ') || 'n/a'}`);
-    console.log('   ❌ Private: Exact count and amounts HIDDEN\n');
 
     // Verify Collateral Proof
     const collateralValid = this.verifyProof(zkProofs.collateral, 'collateral');
@@ -187,7 +198,8 @@ export class CreditAssessmentAgent {
    */
   private async calculateCreditScore(
     verificationResults: { income: boolean; creditHistory: boolean; collateral: boolean },
-    applicantAgentId: string
+    applicantAgentId: string,
+    zkAttributes?: Record<string, any>
   ): Promise<number> {
     console.log('📊 Calculating Credit Score...\n');
     
@@ -211,6 +223,12 @@ export class CreditAssessmentAgent {
       console.log('✅ Collateral verified (>$10k land): +30 points');
     }
 
+    // Bonus: Stable remittance behavior from zkAttributes
+    if (zkAttributes?.stable_remitter) {
+      score += 5;
+      console.log('✅ Stable remittance behavior: +5 points');
+    }
+
     // Bonus: On-chain reputation from ERC-8004
     const onChainReputation = await this.getOnChainReputation(applicantAgentId);
     if (onChainReputation >= 90) {
@@ -229,7 +247,8 @@ export class CreditAssessmentAgent {
   protected async makeDecisionWithAI(
     creditScore: number,
     requestedAmount: number,
-    verificationResults: any
+    verificationResults: any,
+    zkAttributes?: Record<string, any>
   ): Promise<{
     approved: boolean;
     maxAmount: number;
@@ -239,6 +258,10 @@ export class CreditAssessmentAgent {
   }> {
     console.log('🤖 Consulting AI for decision...\n');
 
+    const remittanceSummary = zkAttributes
+      ? JSON.stringify(zkAttributes, null, 2)
+      : 'No remittance attributes provided';
+
     const prompt = `
 Credit Assessment Request:
 - Credit Score: ${creditScore}/110
@@ -247,6 +270,8 @@ Credit Assessment Request:
   * Income Proof: ${verificationResults.income ? '✅ Verified' : '❌ Failed'}
   * Credit History Proof: ${verificationResults.creditHistory ? '✅ Verified' : '❌ Failed'}
   * Collateral Proof: ${verificationResults.collateral ? '✅ Verified' : '❌ Failed'}
+- Remittance-based ZK Attributes (from cross-border payments):
+${remittanceSummary}
 
 Please analyze this loan application and provide a JSON decision with:
 {
@@ -260,17 +285,27 @@ Consider:
 1. The applicant is a cross-border worker who may lack traditional credit history
 2. ZK proofs verify claims without revealing private data (income amount, transaction details, collateral location)
 3. Higher credit scores indicate more verified proofs
-4. Fair interest rates: 8-12% for good credit, 15-20% for moderate, reject if too risky
+4. Remittance attributes show payment behavior patterns (stable_remitter, total_remitted_band, account_age_band)
+5. Fair interest rates: 8-12% for good credit, 15-20% for moderate, reject if too risky
+
+Please respond with ONLY a JSON object, no extra commentary, no markdown.
 `;
+
+    // If no API key, skip AI and use fallback
+    if (!process.env.GROQ_API_KEY) {
+      console.log('⚠️  No GROQ_API_KEY, using fallback decision rules');
+      return this.fallbackDecision(creditScore, requestedAmount);
+    }
 
     try {
       const completion = await this.groq.chat.completions.create({
         messages: [
           {
             role: 'system',
-            content: `You are an AI credit assessment agent for PrivaLend, a ZK-powered lending platform for cross-border workers.
+            content: `You are an AI credit assessment agent for ZKredit, a ZK-powered lending platform for cross-border workers.
                       Your role is to make fair lending decisions based on verified ZK proofs while considering the unique challenges
-                      faced by migrant workers who may lack traditional credit history.`
+                      faced by migrant workers who may lack traditional credit history.
+                      Return ONLY a single JSON object, no explanation, no markdown, no extra text.`
           },
           {
             role: 'user',
@@ -361,8 +396,15 @@ Consider:
     // In production: query ERC-8004 ReputationRegistry contract
     // For demo: return a mock reputation score
     
+    let agentIdNum: bigint;
+    try {
+      agentIdNum = BigInt(agentId);
+    } catch {
+      console.warn('⚠️  Invalid agentId for reputation, using baseline 50');
+      return 50;
+    }
+    
     // Simulate some agents having higher reputation
-    const agentIdNum = BigInt(agentId);
     if (agentIdNum % 3n === 0n) {
       return 95; // High reputation
     } else if (agentIdNum % 2n === 0n) {

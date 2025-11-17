@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { Client, PrivateKey } from '@hashgraph/sdk';
-import { CreditAssessmentAgent } from '../agents/CreditAssessmentAgent';
+import { CreditAssessmentAgent1 } from '../agents/CreditAssessmentAgent1';
 
 interface HederaTool {
   method: string;
@@ -30,7 +30,7 @@ export interface CreditAssessmentPluginContext {
 }
 
 function createCreditAssessmentAgent(context: CreditAssessmentPluginContext) {
-  return new CreditAssessmentAgent(
+  return new CreditAssessmentAgent1(
     context.agentId ?? 2n,
     context.client,
     context.operatorKey,

@@ -170,15 +170,15 @@ contract X402Payment {
         uint256 spentToday = dailySpent[_from][today];
         
         if (spentToday + _amount > DAILY_CAP) {
-            string memory msg = string(
+            string memory errorMsg = string(
                 abi.encodePacked(
                     "Exceeds daily cap of ",
                     uint2str(DAILY_CAP / 1e8),
                     " USD"
                 )
             );
-            emit ComplianceCheck(_from, _amount, false, msg);
-            return (false, msg);
+            emit ComplianceCheck(_from, _amount, false, errorMsg);
+            return (false, errorMsg);
         }
         
         // Check 3: Amount validation (not too small or too large)

@@ -13,16 +13,7 @@
 
 </div>
 
----
 
-## 📖 Table of Contents
-
-- [Overview](#-overview)
-- [Problem Statement](#-problem-statement)
-- [Solution](#-solution)
-- [Architecture](#-architecture)
-- [Technology Stack](#-technology-stack)
-- [Quick Start](#-quick-start)
 - [Launch Guide](#-launch-guide)
 - [ZK Circuits](#-zk-circuits)
 - [Agent System](#-agent-system)
@@ -1043,31 +1034,44 @@ Consider:
 
 ---
 
-### Remittance Flow (Worker Agent + Event Ledger)
+### Remittance Flow (Worker Agent + x402 Payment Protocol)
 
-**Role**: The WorkerAgent now handles the entire remittance lifecycle—simulating HTS/x402 transfers, logging to HCS, and deriving zkAttributes for credit.
+**Role**: The WorkerAgent handles the entire remittance lifecycle—executing real HBAR transfers via the x402 payment protocol, logging to HCS, and deriving zkAttributes for credit.
 
 **Files**:
 - `agent-backend/src/agents/WorkerAgent.ts` → `sendRemittance` orchestration
+- `agent-backend/src/services/x402Payment.ts` → x402 contract execution on Hedera
 - `agent-backend/src/services/eventLedger.ts` → in-memory HCS-style ledger & zk attribute derivation
+
+#### Configuration
+
+Set these environment variables in `agent-backend/.env`:
+
+```bash
+# X402 Payment Protocol Configuration
+X402_PAYMENT_CONTRACT_ID=0x0000000000000000000000000000000000000000  # Your deployed x402 contract
+WORKER_EVM_ADDRESS=0x947fF365B7099aC8b90e4f1024Fc8A2F6D2f3eD4         # Worker wallet (sender)
+RECEIVER_EVM_ADDRESS=0x00000000000000000000000000000000006ef1cf     # Family wallet (receiver)
+```
 
 #### Send Remittance
 
 ```typescript
 const worker = new WorkerAgent(BigInt(1), client, operatorKey);
 const result = await worker.sendRemittance({
-  amount: 200,
-  receiverAccountId: "0.0.987654",
-  currency: "USD",
+  amount: 10,  // HBAR amount
+  receiverAccountId: "0.0.987654",  // Optional; defaults to RECEIVER_EVM_ADDRESS
   corridor: "middle-east-to-philippines",
 });
 
 // result => {
 //   success: true,
 //   transactionHash: "0x21e430fc...",
-//   fee: 1.40,
-//   netAmount: 198.60,
+//   fee: 0.50,
+//   netAmount: 9.50,
 //   corridor: "middle-east-to-philippines",
+//   currency: "HBAR",
+//   x402Payment: { transactionId, status, ... },
 //   remittanceEvent: { eventId, timestamp, ... }
 // }
 ```
@@ -1078,9 +1082,8 @@ const result = await worker.sendRemittance({
 curl -X POST http://localhost:3003/agents/worker/send-remittance \
   -H "Content-Type: application/json" \
   -d '{
-    "amount": 200,
-    "receiverAccountId": "0.0.987654",
-    "currency": "USD"
+    "amount": 10,
+    "receiverAccountId": "0.0.987654"
   }'
 ```
 
@@ -1092,11 +1095,13 @@ curl http://localhost:3003/agents/worker/remittances/1 | jq
 
 Returns history, a 6-month rolling summary, and derived attributes such as `stable_remitter`, `total_remitted_band`, and `account_age_band`. These attributes are automatically attached to `WorkerAgent.applyForLoan()` and forwarded to the AI credit marketplace.
 
-**Fee Structure:** identical 0.7% fee (min $0.50) enforced inside `WorkerAgent.calculateRemittanceFee`.
+**Fee Structure:** 0.7% fee (min 0.50 HBAR) enforced inside `WorkerAgent.calculateRemittanceFee`.
 
-**Credit Building:** `eventLedger.recordRemittanceEvent` stores hashed transaction metadata, which later feeds `deriveZkAttributesFromRemittances` for Noir-friendly inputs.
+**x402 Settlement:** Real HBAR transfers executed via `ContractExecuteTransaction` calling the `pay(address,uint256)` function on the configured x402 contract.
 
-**Receiver Confirmations:** The legacy `ReceiverAgent` has been retired—the frontend now calls `GET /agents/worker/remittances/:agentId` after each transfer, which simulates the family wallet acknowledgment and logs an HCS receipt.
+**Credit Building:** `eventLedger.recordRemittanceEvent` stores transaction metadata, which later feeds `deriveZkAttributesFromRemittances` for Noir-friendly inputs.
+
+**Receiver Confirmations:** The frontend calls `GET /agents/worker/remittances/:agentId` after each transfer to sync the HCS ledger and display transaction history.
 
 ---
 
@@ -1351,6 +1356,7 @@ Check server status.
 Create new worker agent with private data.
 
 **Request Body:**
+
 ```json
 {
   "agentId": "1",
@@ -1366,6 +1372,7 @@ Create new worker agent with private data.
 ```
 
 **Response:**
+
 ```json
 {
   "success": true,
@@ -1450,18 +1457,24 @@ Verify ZK proofs and make lending decision.
 
 ---
 
-### Remittance Agent Endpoints
+    "comment": "Reliable sender"
+  }
+}
+```
 
-**POST `/agents/remittance/send`**
+---
 
-Process cross-border remittance.
+### Worker Remittance Endpoints
+
+**POST `/agents/worker/send-remittance`**
+
+Send a remittance directly from the worker agent (no dedicated remittance/receiver agents required).
 
 **Request Body:**
 ```json
 {
-  "senderAgentId": "1",
-  "receiverAgentId": "4",
   "amount": 200,
+  "receiverAccountId": "0.0.987654",
   "currency": "USD"
 }
 ```
@@ -1470,43 +1483,19 @@ Process cross-border remittance.
 ```json
 {
   "success": true,
-  "transactionHash": "0x21e430fc0192657322fbabd3d261aebf...",
-  "fee": 1.4,
-  "netAmount": 198.6,
-  "message": "Successfully sent $198.60 to Agent #4"
-}
-```
-
----
-
-### Receiver Agent Endpoints
-
-**POST `/agents/receiver/confirm`**
-
-Confirm receipt of remittance.
-
-**Request Body:**
-```json
-{
-  "remittanceId": "rem_123",
-  "expectedAmount": 198.6,
-  "senderAgentId": "1"
-}
-```
-
-**Response:**
-```json
-{
-  "success": true,
-  "verified": true,
-  "message": "Successfully confirmed receipt of $198.6",
-  "reputationUpdated": {
-    "agentId": "1",
-    "newRating": 100,
-    "comment": "Reliable sender"
+  "result": {
+    "transactionHash": "0x21e430fc...",
+    "fee": 1.4,
+    "netAmount": 198.6,
+    "corridor": "middle-east-to-philippines",
+    "remittanceEvent": { "eventId": "remit_...", "timestamp": 1762015403859 }
   }
 }
 ```
+
+**GET `/agents/worker/remittances/:agentId`**
+
+Fetch the worker's remittance history plus zk-friendly aggregate attributes (`stable_remitter`, `total_remitted_band`, etc.). The frontend uses this endpoint to simulate the family confirmation step.
 
 ---
 

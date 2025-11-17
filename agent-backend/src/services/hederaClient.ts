@@ -48,14 +48,11 @@ export function getHederaClient(): Client {
 
 function parsePrivateKey(key: string): PrivateKey {
   try {
-    return PrivateKey.fromStringECDSA(key);
-  } catch (ecdsaError) {
-    try {
-      return PrivateKey.fromString(key);
-    } catch (err) {
-      console.error('Failed to parse Hedera private key:', err);
-      throw ecdsaError;
-    }
+    // Use fromString() to automatically detect ED25519 or ECDSA
+    return PrivateKey.fromString(key);
+  } catch (err) {
+    console.error('Failed to parse Hedera private key:', err);
+    throw new Error('Invalid private key format. Ensure HEDERA_PRIVATE_KEY is correct.');
   }
 }
 

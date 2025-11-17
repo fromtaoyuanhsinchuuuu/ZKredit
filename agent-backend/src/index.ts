@@ -7,7 +7,7 @@ import zkreditPlugin from './plugins/zkreditPlugin';
 import { createCreditAssessmentPluginTools } from './plugins/creditAssessmentPlugin';
 import { generateFeedbackAuthForClient } from './services/feedbackAuthService';
 import { WorkerAgent } from './agents/WorkerAgent';
-import { CreditAssessmentAgent } from './agents/CreditAssessmentAgent';
+import { CreditAssessmentAgent1 } from './agents/CreditAssessmentAgent1';
 import { CreditAssessmentAgent2 } from './agents/CreditAssessmentAgent2';
 import { getHederaAgentTools } from './services/agentToolkit';
 import { getHederaClient, getOperatorAccountId, getOperatorPrivateKey } from './services/hederaClient';
@@ -50,7 +50,7 @@ type CreditAgentProfile = {
   description: string;
   tagline: string;
   strengths: string[];
-  instance?: CreditAssessmentAgent;
+  instance?: CreditAssessmentAgent1;
 };
 
 const DEFAULT_CORRIDOR = 'middle-east-to-philippines';
@@ -128,7 +128,7 @@ type WorkerZkProofs = {
   collateral: any;
 };
 
-type CreditAssessmentDecision = Awaited<ReturnType<CreditAssessmentAgent['processLoanApplication']>>;
+type CreditAssessmentDecision = Awaited<ReturnType<CreditAssessmentAgent1['processLoanApplication']>>;
 
 type LoanOfferTemplate = {
   amount: number;
@@ -170,7 +170,7 @@ type EvaluateCorridorCreditOffersInput = {
   requestedAmount: number;
   zkProofs: WorkerZkProofs;
   zkAttributes?: Record<string, any>;
-  agentOverrides?: Partial<Record<string, CreditAssessmentAgent>>;
+  agentOverrides?: Partial<Record<string, CreditAssessmentAgent1>>;
 };
 
 const evaluateCorridorCreditOffers = async ({
@@ -280,8 +280,8 @@ const evaluateCorridorCreditOffers = async ({
 
 // Initialize agents for demo
 let demoWorkerAgent: WorkerAgent | null = null;
-let demoCreditAgent: CreditAssessmentAgent | null = null;
-let demoCreditAgentB: CreditAssessmentAgent | null = null;
+let demoCreditAgent: CreditAssessmentAgent1 | null = null;
+let demoCreditAgentB: CreditAssessmentAgent1 | null = null;
 
 /**
  * Auto-initialize all demo agents on startup
@@ -304,7 +304,7 @@ const initializeDemoAgents = () => {
     console.log('   ✅ Worker Agent #1 initialized');
 
     // Credit Assessment Agent (Agent #2)
-    demoCreditAgent = new CreditAssessmentAgent(
+    demoCreditAgent = new CreditAssessmentAgent1(
       BigInt(2),
       client,
       operatorKey
@@ -645,20 +645,20 @@ app.post('/agents/worker/send-remittance', async (req, res) => {
       return res.status(400).json({ error: 'Worker agent not initialized' });
     }
 
-    const { amount, receiverAccountId, currency = 'USD', corridor } = req.body;
-    if (!amount || !receiverAccountId) {
-      return res.status(400).json({ error: 'amount and receiverAccountId required' });
+    const { amount, receiverAccountId, corridor } = req.body;
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ error: 'Valid positive amount required' });
     }
 
     const result = await demoWorkerAgent.sendRemittance({
       amount,
       receiverAccountId,
-      currency,
       corridor,
     });
 
     res.json({ success: true, result });
   } catch (error: any) {
+    console.error('Remittance API error:', error);
     res.status(500).json({ error: error.message });
   }
 });
@@ -709,7 +709,7 @@ app.post('/agents/credit/create', async (req, res) => {
     }
 
     if (profileId === 'credit_agent_low_interest') {
-      demoCreditAgent = new CreditAssessmentAgent(
+      demoCreditAgent = new CreditAssessmentAgent1(
         numericAgentId,
         client,
         operatorKey
@@ -842,14 +842,13 @@ app.post('/demo/complete-flow', async (req, res) => {
     });
     const primaryCreditAgentId = BigInt(creditAgentId || 2);
     const secondaryCreditAgentId = primaryCreditAgentId + 100n;
-    const credit = new CreditAssessmentAgent(primaryCreditAgentId, client, operatorKey);
+    const credit = new CreditAssessmentAgent1(primaryCreditAgentId, client, operatorKey);
     const creditAlt = new CreditAssessmentAgent2(secondaryCreditAgentId, client, operatorKey);
 
     // Step 2: Send remittance directly from WorkerAgent
     console.log('\n📝 Step 2: WorkerAgent executes remittance via HTS/x402...');
     const remittanceResult = await worker.sendRemittance({
       amount: 200,
-      currency: 'USD',
       corridor: DEFAULT_CORRIDOR,
       receiverAccountId: familyAccount,
     });

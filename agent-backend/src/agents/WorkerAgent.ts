@@ -6,12 +6,19 @@ import {
   summarizeRemittanceHistory,
   deriveZkAttributesFromRemittances,
 } from '../services/eventLedger';
+import {
+  executeX402Payment,
+  getX402EnvConfig,
+  normalizeEvmAddress,
+  type X402EnvConfig,
+} from '../services/x402Payment';
 
 export class WorkerAgent {
   private agentId: bigint;
   private client: Client;
   private privateKey: PrivateKey;
   private defaultCorridor: string;
+  private x402Config: X402EnvConfig | null;
   
   private privateData: {
     monthlyIncome: number;
@@ -27,6 +34,7 @@ export class WorkerAgent {
     this.client = client;
     this.privateKey = privateKey;
     this.defaultCorridor = privateData?.corridor || 'middle-east-to-philippines';
+    this.x402Config = null;
     this.privateData = {
       monthlyIncome: privateData?.monthlyIncome || 800,
       transactionHistory: privateData?.transactionHistory || [],
@@ -38,54 +46,95 @@ export class WorkerAgent {
   }
 
   async sendRemittance(params: {
-    receiverAccountId: string;
+    receiverAccountId?: string;
     amount: number;
-    currency?: string;
     corridor?: string;
   }) {
     const corridor = params.corridor || this.defaultCorridor;
-    const currency = params.currency || 'USD';
+    const currency = 'HBAR'; // Demo currently supports HBAR only
+    const grossAmount = params.amount;
+
+    if (grossAmount <= 0) {
+      throw new Error('Remittance amount must be positive.');
+    }
+
+    if (grossAmount > 200) {
+      throw new Error('Demo remittances are capped at 200 HBAR to avoid exceeding faucet allocations.');
+    }
+
+    const x402Config = this.ensureX402Config();
+    const normalizedReceiver = params.receiverAccountId
+      ? normalizeEvmAddress(params.receiverAccountId)
+      : x402Config.receiverAddress;
+    const ledgerReceiver = params.receiverAccountId ? normalizedReceiver : x402Config.receiverAddress;
+    const fee = this.calculateRemittanceFee(grossAmount);
+    const netAmount = Math.max(grossAmount - fee, 0);
+    const amountTinybars = this.toTinybars(netAmount);
+
+    if (amountTinybars <= 0n) {
+      throw new Error('Net amount is too small after fees to execute an x402 payment.');
+    }
+
     console.log('\n\n💸 WorkerAgent initiating remittance');
-    console.log(`   👷 Worker: Agent #${this.agentId.toString()}`);
-    console.log(`   👪 Receiver Account: ${params.receiverAccountId}`);
+    console.log(`   👷 Worker Agent ID: ${this.agentId.toString()}`);
+    console.log(`   👷 Worker Wallet: ${x402Config.workerAddress}`);
+    console.log(`   👪 Receiver Wallet: ${normalizedReceiver}`);
     console.log(`   🌍 Corridor: ${corridor}`);
-    console.log(`   💰 Amount: $${params.amount} ${currency}`);
+    console.log(`   💰 Amount: ${grossAmount.toFixed(4)} ${currency}`);
+    console.log(`   🧮 Fee: ${fee.toFixed(4)} ${currency} (0.7% min 0.50 HBAR)`);
+    console.log(`   📤 Net amount to family: ${netAmount.toFixed(4)} ${currency}`);
+    console.log(x402Config.useDirectTransfer 
+      ? '   ⚡ Executing direct HBAR transfer...' 
+      : '   ⚙️ Executing x402 contract call...');
 
-    const fee = this.calculateRemittanceFee(params.amount);
-    const netAmount = params.amount - fee;
-    console.log(`   🧮 Fee: $${fee.toFixed(2)} (0.7% min $0.50)`);
-    console.log(`   📤 Net amount to family: $${netAmount.toFixed(2)}`);
+    const paymentResult = await executeX402Payment({
+      client: this.client,
+      contractId: x402Config.contractId,
+      receiverAddress: normalizedReceiver, // Use the normalized receiver address from params or config
+      amountTinybars,
+      useDirectTransfer: x402Config.useDirectTransfer,
+    });
 
-    const txHash = '0x' + crypto.randomBytes(32).toString('hex');
-    await new Promise(resolve => setTimeout(resolve, 500));
-    console.log('   ✅ Simulated HTS/x402 transfer complete');
-    console.log(`   🔗 HashScan: ${txHash.slice(0, 20)}...`);
+    console.log(x402Config.useDirectTransfer 
+      ? '   ✅ Direct HBAR transfer confirmed' 
+      : '   ✅ x402 transfer confirmed');
+    console.log(`   🔗 HashScan: ${paymentResult.transactionHash}`);
 
     const remittanceEvent = recordRemittanceEvent({
       workerAgentId: this.agentId.toString(),
       remittanceAgentId: this.agentId.toString(),
-      receiverAgentId: params.receiverAccountId,
+      receiverAgentId: ledgerReceiver,
       corridor,
-      amount: params.amount,
+      amount: grossAmount,
       fee,
       netAmount,
       currency,
-      transactionHash: txHash,
+      transactionHash: paymentResult.transactionHash,
       timestamp: Date.now(),
     });
 
     console.log('   📝 HCS RemittanceEvent logged');
     console.log('   🧾 Stored for future ZK attributes');
 
+    // Add this remittance to transaction history for credit scoring
+    this.addTransaction({
+      hash: paymentResult.transactionHash,
+      amount: netAmount,
+      type: 'remittance',
+      timestamp: Date.now(),
+      corridor,
+    });
+
     return {
       success: true,
-      transactionHash: txHash,
+      transactionHash: paymentResult.transactionHash,
       fee,
       netAmount,
       corridor,
       currency,
       remittanceEvent,
-      message: `Remittance of $${netAmount.toFixed(2)} sent to family account ${params.receiverAccountId}`,
+      x402Payment: paymentResult,
+      message: `Remittance of ${netAmount.toFixed(4)} ${currency} sent to family account ${ledgerReceiver}`,
     };
   }
 
@@ -147,6 +196,7 @@ export class WorkerAgent {
     return {
       success: true,
       message: 'Loan application submitted',
+      requestedAmount: amount, // Include requested amount for credit agents
       zkProofs: { income, creditHistory: credit, collateral },
       zkAttributes: remittanceAttributes,
     };
@@ -168,6 +218,23 @@ export class WorkerAgent {
   private calculateRemittanceFee(amount: number) {
     const percentage = amount * 0.007;
     return Math.max(percentage, 0.5);
+  }
+
+  private ensureX402Config(): X402EnvConfig {
+    if (!this.x402Config) {
+      this.x402Config = getX402EnvConfig();
+      console.log('⚙️ Loaded x402 config:', {
+        contractId: this.x402Config.contractId?.toString() || 'Direct Transfer Mode',
+        workerAddress: this.x402Config.workerAddress,
+        receiverAddress: this.x402Config.receiverAddress,
+        mode: this.x402Config.useDirectTransfer ? 'Direct HBAR Transfer' : 'x402 Contract',
+      });
+    }
+    return this.x402Config;
+  }
+
+  private toTinybars(amountHBAR: number): bigint {
+    return BigInt(Math.round(amountHBAR * 1e8));
   }
 
   private mockProof(inputs: any): string {

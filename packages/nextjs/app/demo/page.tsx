@@ -158,7 +158,6 @@ export default function DemoPage() {
         body: JSON.stringify({
           amount: remittanceAmount,
           receiverAccountId: familyAccountId,
-          currency: "USD",
         }),
       });
       const data = await response.json();
@@ -455,20 +454,24 @@ export default function DemoPage() {
                 </div>
                 <div className="form-control">
                   <label className="label">
-                    <span className="label-text font-medium">Amount (USD)</span>
+                    <span className="label-text font-medium">Amount (HBAR)</span>
                   </label>
                   <input
                     type="number"
                     value={remittanceAmount}
                     onChange={e => setRemittanceAmount(Number(e.target.value))}
                     className="input input-bordered input-lg text-2xl"
+                    step="0.01"
+                    max="200"
                   />
                 </div>
                 <div className="mt-4 p-3 bg-info/10 rounded">
                   <p className="text-sm">
-                    <strong>Fee:</strong> 0.7% (${(remittanceAmount * 0.007).toFixed(2)})
+                    <strong>Fee:</strong> 0.7% ({(remittanceAmount * 0.007).toFixed(4)} HBAR, min 0.5)
                     <br />
-                    <strong>Net Amount:</strong> ${(remittanceAmount * 0.993).toFixed(2)}
+                    <strong>Net Amount:</strong> {(remittanceAmount * 0.993).toFixed(4)} HBAR
+                    <br />
+                    <strong>Via:</strong> x402 Payment Protocol on Hedera
                   </p>
                 </div>
               </div>
@@ -513,15 +516,15 @@ export default function DemoPage() {
                 </div>
                 <div className="flex justify-between">
                   <span>Amount Sent:</span>
-                  <span className="font-bold">${remittanceAmount}</span>
+                  <span className="font-bold">{remittanceAmount} HBAR</span>
                 </div>
                 <div className="flex justify-between">
                   <span>Fee:</span>
-                  <span>${remittanceResult.fee.toFixed(2)}</span>
+                  <span>{remittanceResult.fee.toFixed(4)} HBAR</span>
                 </div>
                 <div className="flex justify-between text-lg">
                   <span className="font-bold">Amount Received:</span>
-                  <span className="font-bold text-success">${remittanceResult.netAmount.toFixed(2)}</span>
+                  <span className="font-bold text-success">{remittanceResult.netAmount.toFixed(4)} HBAR</span>
                 </div>
               </div>
               <div className="mb-6">
