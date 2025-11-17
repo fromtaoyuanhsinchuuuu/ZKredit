@@ -1,10 +1,8 @@
 "use client";
 
-import { useState } from "react";
-import { useAccount } from "wagmi";
-import { Address } from "~~/components/scaffold-eth";
+import { useEffect, useState } from "react";
 
-type DemoStep = "wallet" | "profile" | "remittance" | "confirm" | "zkproof" | "loan" | "result";
+type DemoStep = "profile" | "remittance" | "confirm" | "zkproof" | "loan" | "result";
 
 interface AgentProfile {
   role: "worker" | "receiver";
@@ -99,9 +97,18 @@ interface CreditOffer {
   rank?: number;
 }
 
+const formatAddress = (address: string) => {
+  if (!address) {
+    return "";
+  }
+  if (address.length <= 10) {
+    return address;
+  }
+  return `${address.slice(0, 6)}…${address.slice(-4)}`;
+};
+
 export default function DemoPage() {
-  const { address: connectedAddress, isConnected } = useAccount();
-  const [currentStep, setCurrentStep] = useState<DemoStep>("wallet");
+  const [currentStep, setCurrentStep] = useState<DemoStep>("profile");
   const [workerProfile, setWorkerProfile] = useState<AgentProfile>({
     role: "worker",
     name: "Ahmad",
@@ -112,7 +119,7 @@ export default function DemoPage() {
     role: "receiver",
     name: "Fatima",
   });
-  const [familyAccountId, setFamilyAccountId] = useState("0.0.987654");
+  const [familyAccountId, setFamilyAccountId] = useState("");
   const initialRemittanceAmount = 200;
   const [remittanceAmount, setRemittanceAmount] = useState(initialRemittanceAmount);
   const [remittanceAmountInput, setRemittanceAmountInput] = useState(initialRemittanceAmount.toString());
@@ -124,10 +131,44 @@ export default function DemoPage() {
   const [selectedOffer, setSelectedOffer] = useState<CreditOffer | null>(null);
   const [loanResult, setLoanResult] = useState<LoanResult | null>(null);
   const [loading, setLoading] = useState(false);
+  const [operatorInfo, setOperatorInfo] = useState<{
+    accountId: string;
+    evmAddress: string;
+    balanceHbars: string;
+  } | null>(null);
+  const [operatorInfoError, setOperatorInfoError] = useState<string | null>(null);
 
   // API 調用
   const API_BASE = "http://localhost:3003";
   const DEMO_WORKER_AGENT_ID = "1";
+
+  useEffect(() => {
+    const fetchOperatorInfo = async () => {
+      try {
+        const response = await fetch(`${API_BASE}/operator/info`);
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        const data = await response.json();
+        if (!data.success) {
+          throw new Error(data.error || "Unknown backend error");
+        }
+
+        setOperatorInfo({
+          accountId: data.accountId,
+          evmAddress: data.evmAddress,
+          balanceHbars: data.balance?.hbars ?? "",
+        });
+        setOperatorInfoError(null);
+      } catch (error: any) {
+        console.error("Failed to fetch operator info", error);
+        setOperatorInfo(null);
+        setOperatorInfoError(error.message || "Unable to load operator info");
+      }
+    };
+
+    fetchOperatorInfo();
+  }, []);
 
   const applyOfferSelection = (offer: CreditOffer | null) => {
     setSelectedOffer(offer);
@@ -301,7 +342,6 @@ export default function DemoPage() {
 
   const renderStepIndicator = () => {
     const steps = [
-      { id: "wallet", label: "Connect", icon: "🔗" },
       { id: "profile", label: "Profile", icon: "👤" },
       { id: "remittance", label: "Send $", icon: "💸" },
       { id: "confirm", label: "Confirm", icon: "✓" },
@@ -343,36 +383,27 @@ export default function DemoPage() {
         <p className="text-lg text-base-content/70">Zero-Knowledge Credit System for Cross-Border Workers</p>
       </div>
 
+      {operatorInfo && (
+        <div className="alert alert-info mb-6">
+          <span>
+            Backend signer: {operatorInfo.accountId} ({formatAddress(operatorInfo.evmAddress)}) — transactions are paid from this account.
+            {operatorInfo.balanceHbars && ` Current balance: ${operatorInfo.balanceHbars}`}
+          </span>
+        </div>
+      )}
+      {!operatorInfo && operatorInfoError && (
+        <div className="alert alert-warning mb-6">
+          <span>Unable to load backend signer info. {operatorInfoError}</span>
+        </div>
+      )}
+
       {/* Step Indicator */}
       {renderStepIndicator()}
 
       {/* Main Content */}
       <div className="card bg-base-100 shadow-xl">
         <div className="card-body">
-          {/* Step 1: Connect Wallet */}
-          {currentStep === "wallet" && (
-            <div className="text-center">
-              <h2 className="card-title justify-center text-2xl mb-4">Connect Your Wallet</h2>
-              {isConnected ? (
-                <div>
-                  <p className="mb-4">✅ Wallet Connected!</p>
-                  <Address address={connectedAddress} />
-                  <button className="btn btn-primary mt-6" onClick={() => setCurrentStep("profile")}>
-                    Continue to Profile →
-                  </button>
-                </div>
-              ) : (
-                <div>
-                  <p className="mb-4">Please connect your wallet to continue</p>
-                  <p className="text-sm text-base-content/70">
-                    Use the &quot;Connect Wallet&quot; button in the header
-                  </p>
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Step 2: Profile Setup */}
+          {/* Step 1: Profile Setup */}
           {currentStep === "profile" && (
             <div>
               <h2 className="card-title text-2xl mb-4">Setup Your Profile</h2>
@@ -913,7 +944,7 @@ export default function DemoPage() {
               <button
                 className="btn btn-outline w-full mt-6"
                 onClick={() => {
-                  setCurrentStep("wallet");
+                  setCurrentStep("profile");
                   setRemittanceResult(null);
                   setLoanMarketplace(null);
                   setLoanOffers([]);

@@ -2,7 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import * as crypto from 'crypto';
-import { AccountId } from '@hashgraph/sdk';
+import { AccountBalanceQuery, AccountId } from '@hashgraph/sdk';
 import zkreditPlugin from './plugins/zkreditPlugin';
 import { createCreditAssessmentPluginTools } from './plugins/creditAssessmentPlugin';
 import { generateFeedbackAuthForClient } from './services/feedbackAuthService';
@@ -359,6 +359,34 @@ app.get('/health', (req, res) => {
       accountId: operatorId.toString(),
     },
   });
+});
+
+/**
+ * Operator info (account + balance)
+ */
+app.get('/operator/info', async (_req, res) => {
+  try {
+    const balance = await new AccountBalanceQuery()
+      .setAccountId(operatorId)
+      .execute(client);
+
+    res.json({
+      success: true,
+      accountId: operatorId.toString(),
+      evmAddress: `0x${operatorId.toSolidityAddress()}`,
+      balance: {
+        hbars: balance.hbars.toString(),
+        tinybars: balance.hbars.toTinybars().toString(),
+      },
+    });
+  } catch (error: any) {
+    console.error('Operator info error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch operator info',
+      message: error.message,
+    });
+  }
 });
 
 /**
