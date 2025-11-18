@@ -2,13 +2,14 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import * as crypto from 'crypto';
-import { AccountBalanceQuery, AccountId } from '@hashgraph/sdk';
+import { AccountBalanceQuery, AccountId, TransferTransaction, Hbar } from '@hashgraph/sdk';
 import zkreditPlugin from './plugins/zkreditPlugin';
 import { createCreditAssessmentPluginTools } from './plugins/creditAssessmentPlugin';
 import { generateFeedbackAuthForClient } from './services/feedbackAuthService';
 import { WorkerAgent } from './agents/WorkerAgent';
 import { CreditAssessmentAgent1 } from './agents/CreditAssessmentAgent1';
 import { CreditAssessmentAgent2 } from './agents/CreditAssessmentAgent2';
+import { DefiPoolAgent } from './agents/DefiPoolAgent';
 import { getHederaAgentTools } from './services/agentToolkit';
 import { getHederaClient, getOperatorAccountId, getOperatorPrivateKey } from './services/hederaClient';
 import {
@@ -19,7 +20,7 @@ import {
 } from './services/eventLedger';
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 3003;
 
 // Middleware
 app.use(cors());
@@ -108,14 +109,13 @@ const creditAgentDirectory: CreditAgentProfile[] = [
 ];
 
 const loanOfferTemplates: Record<string, {
-  amount: number;
   interestRate: number;
   tenureMonths: number;
   disbursementHours: number;
   repaymentFrequency: string;
 }> = {
-  credit_agent_low_interest: { amount: 100, interestRate: 8, tenureMonths: 3, disbursementHours: 4, repaymentFrequency: 'monthly' },
-  credit_agent_defi_plus: { amount: 150, interestRate: 10, tenureMonths: 4, disbursementHours: 2, repaymentFrequency: 'monthly' },
+  credit_agent_low_interest: { interestRate: 8, tenureMonths: 3, disbursementHours: 4, repaymentFrequency: 'monthly' },
+  credit_agent_defi_plus: { interestRate: 10, tenureMonths: 4, disbursementHours: 2, repaymentFrequency: 'monthly' },
 };
 
 const loanAnalysisTemplates: Record<string, {
@@ -147,7 +147,6 @@ type WorkerZkProofs = {
 type CreditAssessmentDecision = Awaited<ReturnType<CreditAssessmentAgent1['processLoanApplication']>>;
 
 type LoanOfferTemplate = {
-  amount: number;
   interestRate: number;
   tenureMonths: number;
   disbursementHours: number;
@@ -155,7 +154,6 @@ type LoanOfferTemplate = {
 };
 
 const DEFAULT_LOAN_TEMPLATE: LoanOfferTemplate = {
-  amount: 120,
   interestRate: 12,
   tenureMonths: 3,
   disbursementHours: 6,
@@ -255,7 +253,7 @@ const evaluateCorridorCreditOffers = async ({
       strengths: profile.strengths,
       status: profile.status,
       offer: {
-        amount: decision.maxLoanAmount || template.amount,
+        amount: requestedAmount,
         apr: decision.interestRate || template.interestRate,
         tenureMonths: template.tenureMonths,
         disbursementHours: template.disbursementHours,
@@ -298,6 +296,7 @@ const evaluateCorridorCreditOffers = async ({
 let demoWorkerAgent: WorkerAgent | null = null;
 let demoCreditAgent: CreditAssessmentAgent1 | null = null;
 let demoCreditAgentB: CreditAssessmentAgent1 | null = null;
+let defiPoolAgent: DefiPoolAgent | null = null;
 
 /**
  * Auto-initialize all demo agents on startup
@@ -314,7 +313,14 @@ const initializeDemoAgents = () => {
       {
         monthlyIncome: 800,
         landValue: 15000,
-        gpsCoordinates: { latitude: 16.8661, longitude: 96.1951 }
+        gpsCoordinates: { latitude: 16.8661, longitude: 96.1951 },
+        transactionHistory: [
+          { hash: '0xabc', amount: 200, timestamp: Date.now() - 5 * 30 * 24 * 60 * 60 * 1000 },
+          { hash: '0xdef', amount: 150, timestamp: Date.now() - 4 * 30 * 24 * 60 * 60 * 1000 },
+          { hash: '0xghi', amount: 300, timestamp: Date.now() - 3 * 30 * 24 * 60 * 60 * 1000 },
+          { hash: '0xjkl', amount: 200, timestamp: Date.now() - 2 * 30 * 24 * 60 * 60 * 1000 },
+          { hash: '0xmno', amount: 250, timestamp: Date.now() - 1 * 30 * 24 * 60 * 60 * 1000 },
+        ]
       }
     );
     console.log('   ✅ Worker Agent #1 initialized');
@@ -326,7 +332,6 @@ const initializeDemoAgents = () => {
       operatorKey
     );
     console.log('   ✅ Credit Assessment Agent #2 initialized');
-
     // Credit Assessment Agent B (Agent #2B)
     demoCreditAgentB = new CreditAssessmentAgent2(
       BigInt(5),
@@ -335,6 +340,22 @@ const initializeDemoAgents = () => {
     );
     console.log('   ✅ Credit Assessment Agent #2B initialized (alternative offer)');
 
+    // DeFi Pool Agent
+    const poolAccountId = process.env.DEFI_POOL_ACCOUNT_ID;
+    const poolPrivateKey = process.env.DEFI_POOL_PRIVATE_KEY;
+    
+    if (poolAccountId && poolPrivateKey) {
+      defiPoolAgent = new DefiPoolAgent(
+        poolAccountId,
+        poolPrivateKey,
+        'Cross-Border DeFi Liquidity Pool'
+      );
+      console.log('   ✅ DeFi Liquidity Pool Agent initialized');
+    } else {
+      console.log('   ⚠️  DeFi Pool Agent not initialized (missing credentials in .env)');
+    }
+
+  syncCreditAgentDirectoryInstances();
   syncCreditAgentDirectoryInstances();
     console.log('🎉 All demo agents ready!\n');
   } catch (error: any) {
@@ -986,8 +1007,38 @@ app.post('/demo/complete-flow', async (req, res) => {
 });
 
 /**
- * Contract addresses
+ * Disburse Loan (from DeFi Liquidity Pool)
+ * POST /agents/credit/disburse
  */
+app.post('/agents/credit/disburse', async (req, res) => {
+  try {
+    const { amount, workerAgentId, currency = 'HBAR' } = req.body;
+
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ error: 'Valid positive amount required' });
+    }
+
+    if (!defiPoolAgent) {
+      return res.status(500).json({ 
+        error: 'DeFi Pool Agent not initialized. Please configure DEFI_POOL_ACCOUNT_ID and DEFI_POOL_PRIVATE_KEY in .env' 
+      });
+    }
+
+    // Get worker's account ID from env
+    const workerAccountId = process.env.WORKER_EVM_ADDRESS || process.env.HEDERA_ACCOUNT_ID;
+    if (!workerAccountId) {
+      return res.status(500).json({ error: 'Worker account not configured' });
+    }
+
+    const result = await defiPoolAgent.disburseLoan(workerAccountId, amount, currency);
+
+    res.json(result);
+
+  } catch (error: any) {
+    console.error('Disbursement error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // Start server
 app.listen(PORT, () => {
@@ -1003,6 +1054,7 @@ app.listen(PORT, () => {
   console.log(`   Worker Agent #1: ${demoWorkerAgent ? '✅ Ready' : '❌ Not initialized'}`);
   console.log(`   Credit Agent #2: ${demoCreditAgent ? '✅ Ready' : '❌ Not initialized'}`);
   console.log(`   Credit Agent #2B: ${demoCreditAgentB ? '✅ Ready' : '❌ Not initialized'}`);
+  console.log(`   DeFi Pool Agent: ${defiPoolAgent ? '✅ Ready' : '❌ Not initialized'}`);
   console.log(`   Event Ledger: ✅ Active (in-memory)`);
   console.log('');
   console.log('📍 Endpoints:');
