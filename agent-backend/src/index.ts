@@ -78,7 +78,7 @@ const creditAgentDirectory: CreditAgentProfile[] = [
     name: 'Government-Supported Agent',
     corridor: DEFAULT_CORRIDOR,
     sponsor: 'Ministry of Finance',
-    agentType: 'ngo',
+    agentType: 'defi',
     status: 'active',
     description: 'Official government program providing low-interest financial support for verified workers.',
     tagline: 'State-subsidized loans (Max 5% APR)',

@@ -1,4 +1,4 @@
-import { Client, PrivateKey, ContractExecuteTransaction, ContractFunctionParameters } from '@hashgraph/sdk';
+import { Client, PrivateKey, ContractExecuteTransaction, ContractFunctionParameters, ContractId } from '@hashgraph/sdk';
 import Groq from 'groq-sdk';
 import { verifyCreditHistoryNoirProof } from '../services/noirCreditHistory';
 
@@ -14,8 +14,13 @@ export class CreditAssessmentAgent1 {
   private groq: Groq;
   
   private contractAddresses = {
-    identityRegistry: process.env.IDENTITY_REGISTRY_ADDRESS || '0x1FCE50d8F7B53d18d458Cf009dA2AD7cf0F2464d',
-    reputationRegistry: process.env.REPUTATION_REGISTRY_ADDRESS || '0xfe5270a6339d9C05A37dA0f59AdF6c9c77AC7d7a'
+    // NOTE: Using freshly deployed demo contracts (no signature verification) if available.
+    // Fallback to any existing production addresses or hardcoded demo values.
+    identityRegistry: process.env.IDENTITY_REGISTRY_ADDRESS
+      || '0xfc25ceBa1294746C489653A00b0E43e51B88F8f3',
+    reputationRegistry: process.env.REPUTATION_REGISTRY_DEMO_ADDRESS
+      || process.env.REPUTATION_REGISTRY_ADDRESS
+      || '0xd166ebc05a04e16fb6de4abba592a2b372b69f6f'
   };
 
   constructor(agentId: bigint, client: Client, privateKey: PrivateKey) {
@@ -457,9 +462,49 @@ Please respond with ONLY a JSON object, no extra commentary, no markdown.
       console.log(`   📄 Feedback URI: ${feedbackUri.substring(0, 50)}...`);
       console.log(`   #️⃣  Feedback Hash: ${feedbackHash.substring(0, 20)}...`);
 
+      // Convert EVM address to Hedera ContractId
+      let contractId;
+      // Clean up the address string (remove whitespace and quotes)
+      let registryAddress = this.contractAddresses.reputationRegistry.trim();
+      
+      // Remove surrounding quotes if any (single or double)
+      if ((registryAddress.startsWith('"') && registryAddress.endsWith('"')) || 
+          (registryAddress.startsWith("'") && registryAddress.endsWith("'"))) {
+        registryAddress = registryAddress.slice(1, -1);
+      }
+
+      console.log(`   🔍 Parsing Contract Address: [${registryAddress}]`);
+      if (registryAddress.toLowerCase() === '0xd166ebc05a04e16fb6de4abba592a2b372b69f6f') {
+        console.log('   🧪 Using DEMO ReputationRegistry (no signature verification).');
+      }
+
+      if (registryAddress.toLowerCase().startsWith('0x')) {
+        // Remove 0x prefix and use fromEvmAddress
+        const evmAddress = registryAddress.slice(2);
+        contractId = ContractId.fromEvmAddress(0, 0, evmAddress);
+      } else {
+        // Assume it's already in Hedera format (0.0.xxxxx)
+        try {
+          contractId = ContractId.fromString(registryAddress);
+        } catch (e) {
+          // If parsing failed, check if it looks like a raw EVM address (40 hex chars)
+          if (/^[0-9a-fA-F]{40}$/.test(registryAddress)) {
+             contractId = ContractId.fromEvmAddress(0, 0, registryAddress);
+          } else {
+             throw e;
+          }
+        }
+      }
+
       // Execute contract transaction
+      // Hedera SDK ContractFunctionParameters.addUint256 expects number | Long | BigNumber.
+      // For demo agent IDs we assume they fit safely in JS number range.
+      const parsedAgentId = Number(data.applicantAgentId);
+      if (!Number.isSafeInteger(parsedAgentId)) {
+        console.warn('⚠️  agentId exceeds safe integer range; truncation possible in demo environment');
+      }
       const functionParams = new ContractFunctionParameters()
-        .addUint256(Number(data.applicantAgentId)) // agentId
+        .addUint256(parsedAgentId) // agentId
         .addUint8(feedbackScore) // score (0-100)
         .addBytes32(Buffer.from(tag1, 'hex')) // tag1
         .addBytes32(Buffer.from(tag2, 'hex')) // tag2
@@ -468,11 +513,11 @@ Please respond with ONLY a JSON object, no extra commentary, no markdown.
         .addBytes(dummyFeedbackAuth); // feedbackAuth
 
       const transaction = new ContractExecuteTransaction()
-        .setContractId(this.contractAddresses.reputationRegistry)
+        .setContractId(contractId)
         .setGas(800_000)
         .setFunction('giveFeedback', functionParams);
 
-      console.log(`   🔄 Executing transaction to ${this.contractAddresses.reputationRegistry}...`);
+      console.log(`   🔄 Executing transaction to ${contractId.toString()}...`);
       
       const txResponse = await transaction.execute(this.client);
       const receipt = await txResponse.getReceipt(this.client);

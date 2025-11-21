@@ -39,11 +39,22 @@ export const normalizeEvmAddress = (value: string): string => {
     throw new Error('Address value is empty');
   }
 
+  // If it's a Hedera account ID format (e.g., "0.0.123456")
   if (value.includes('.')) {
-    return `0x${AccountId.fromString(value).toSolidityAddress()}`;
+    const solidityAddr = AccountId.fromString(value).toSolidityAddress();
+    return `0x${solidityAddr}`;
   }
 
-  return value.startsWith('0x') ? value : `0x${value}`;
+  // Ensure 0x prefix
+  const withPrefix = value.startsWith('0x') ? value : `0x${value}`;
+  
+  // Pad short addresses to 40 hex characters (20 bytes)
+  if (withPrefix.length < 42) {
+    const hexPart = withPrefix.slice(2);
+    return `0x${hexPart.padStart(40, '0')}`;
+  }
+
+  return withPrefix;
 };
 
 export const getX402EnvConfig = (): X402EnvConfig => {

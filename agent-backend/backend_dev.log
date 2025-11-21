@@ -1,0 +1,32 @@
+
+> zkredit-agent-backend@1.0.0 dev
+> tsx watch src/index.ts
+
+🤖 Initializing demo agents...
+   ✅ Worker Agent #1 initialized
+   ✅ Credit Assessment Agent #2 initialized
+   ✅ Credit Assessment Agent #2B initialized (alternative offer)
+   ✅ DeFi Liquidity Pool Agent initialized
+🎉 All demo agents ready!
+
+
+🚀 ZKredit Agent Backend
+==================================================
+📡 Server: http://localhost:3003
+🌐 Hedera Network: Testnet
+👤 Operator Account: 0.0.7178277
+🔧 Plugin: zkredit v1.0.0
+🛠️  Available tools: 5
+
+🤖 Demo Agents Status:
+   Worker Agent #1: ✅ Ready
+   Credit Agent #2: ✅ Ready
+   Credit Agent #2B: ✅ Ready
+   DeFi Pool Agent: ✅ Ready
+   Event Ledger: ✅ Active (in-memory)
+
+📍 Endpoints:
+   Health: http://localhost:3003/health
+   Tools: http://localhost:3003/tools
+   Demo: http://localhost:3000/demo
+==================================================

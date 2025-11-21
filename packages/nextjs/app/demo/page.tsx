@@ -111,13 +111,13 @@ export default function DemoPage() {
   const [currentStep, setCurrentStep] = useState<DemoStep>("profile");
   const [workerProfile, setWorkerProfile] = useState<AgentProfile>({
     role: "worker",
-    name: "Fatima",
+    name: "Ahmad",
     monthlyIncome: 800,
     landValue: 15000,
   });
   const [receiverProfile, setReceiverProfile] = useState<AgentProfile>({
     role: "receiver",
-    name: "Ahmad",
+    name: "Fatima",
   });
   const [familyAccountId, setFamilyAccountId] = useState("");
   const initialRemittanceAmount = 200;
@@ -619,12 +619,12 @@ export default function DemoPage() {
                 <div className="flex justify-between items-center mb-4">
                   <div>
                     <p className="text-sm text-base-content/70">From</p>
-                    <p className="font-bold">{workerProfile.name} (Worker)</p>
+                    <p className="font-bold">{receiverProfile.name} (Family)</p>
                   </div>
                   <div className="text-3xl">→</div>
                   <div>
                     <p className="text-sm text-base-content/70">To</p>
-                    <p className="font-bold">{receiverProfile.name} (Family)</p>
+                    <p className="font-bold">{workerProfile.name} (Worker)</p>
                     <p className="text-xs text-base-content/60">Acct: {familyAccountId}</p>
                   </div>
                 </div>
@@ -707,7 +707,7 @@ export default function DemoPage() {
                 </p>
                 <div className="bg-base-200 p-4 rounded space-y-2 text-sm">
                   <div className="flex justify-between">
-                    <span>Receiver</span>
+                    <span>Sender</span>
                     <span className="font-semibold">{receiverProfile.name}</span>
                   </div>
                   <div className="flex justify-between">
