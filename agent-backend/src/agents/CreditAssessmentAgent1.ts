@@ -1,17 +1,17 @@
 import { Client, PrivateKey, ContractExecuteTransaction, ContractFunctionParameters, ContractId } from '@hashgraph/sdk';
-import Groq from 'groq-sdk';
+import OpenAI from 'openai';
 import { verifyCreditHistoryNoirProof } from '../services/noirCreditHistory';
 
 /**
  * Credit Assessment Agent 1 - ZK Verifier
  * Verifies ZK proofs and calculates credit scores
- * Uses AI (Groq) for intelligent decision-making
+ * Uses AI (OpenRouter) for intelligent decision-making
  */
 export class CreditAssessmentAgent1 {
   private agentId: bigint;
   private client: Client;
   private privateKey: PrivateKey;
-  private groq: Groq;
+  private openai: OpenAI;
   
   private contractAddresses = {
     // NOTE: Using freshly deployed demo contracts (no signature verification) if available.
@@ -28,13 +28,14 @@ export class CreditAssessmentAgent1 {
     this.client = client;
     this.privateKey = privateKey;
     
-    // Initialize Groq AI
-    const apiKey = process.env.GROQ_API_KEY;
+    // Initialize OpenRouter AI
+    const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
-      console.warn('⚠️  GROQ_API_KEY missing in env, will use fallback decisions only');
+      console.warn('⚠️  OPENROUTER_API_KEY missing in env, will use fallback decisions only');
     }
-    this.groq = new Groq({
-      apiKey: apiKey || 'dummy-key'
+    this.openai = new OpenAI({
+      apiKey: apiKey || 'dummy-key',
+      baseURL: 'https://openrouter.ai/api/v1'
     });
   }
 
@@ -297,14 +298,14 @@ Please respond with ONLY a JSON object, no extra commentary, no markdown.
 `;
 
     // If no API key, skip AI and use fallback
-    if (!process.env.GROQ_API_KEY) {
-      console.log('⚠️  No GROQ_API_KEY, using fallback decision rules');
+    if (!process.env.OPENROUTER_API_KEY) {
+      console.log('⚠️  No OPENROUTER_API_KEY, using fallback decision rules');
       return this.fallbackDecision(creditScore, requestedAmount);
     }
 
     try {
       console.log('🤖 Connecting to LLM for analysis...');
-      const completion = await this.groq.chat.completions.create({
+      const completion = await this.openai.chat.completions.create({
         messages: [
           {
             role: 'system',
@@ -315,7 +316,7 @@ Please respond with ONLY a JSON object, no extra commentary, no markdown.
             content: prompt
           }
         ],
-        model: 'llama-3.3-70b-versatile',
+        model: 'google/gemini-2.5-flash-lite-preview-09-2025',
         temperature: 0.8,
         max_tokens: 1024
       });
@@ -347,9 +348,13 @@ Please respond with ONLY a JSON object, no extra commentary, no markdown.
         reason: aiDecision.reason || 'AI analysis completed',
         aiAnalysis: aiResponse
       };
-    } catch (error) {
-      console.error('❌ AI decision error:', error);
-      console.log('⚠️  Using fallback decision rules');
+    } catch (error: any) {
+      if (error?.status === 403) {
+        console.log('⚠️  AI Service Access Denied (403). Likely region block or invalid key.');
+      } else {
+        console.error('❌ AI decision error:', error.message || error);
+      }
+      console.log('⚠️  Using fallback decision rules (System continues normally)');
       return this.fallbackDecision(creditScore, requestedAmount);
     }
   }

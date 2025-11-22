@@ -1176,7 +1176,7 @@ export default function DemoPage() {
                 </div>
                 <div className="stat">
                   <div className="stat-title">Approved Amount</div>
-                  <div className="stat-value text-success">{loanResult.maxLoanAmount} HBAR</div>
+                  <div className="stat-value text-success">{loanAmount} HBAR</div>
                   <div className="stat-desc">Matches corridor cap</div>
                 </div>
                 <div className="stat">
